@@ -14,6 +14,7 @@ import random
 import statistics
 import time
 
+from _common import add_engine_args, describe, engine_kwargs
 from minisgl import SamplingParams
 from minisgl.llm import LLM
 
@@ -23,8 +24,9 @@ def main() -> None:
     ap.add_argument("--model", required=True)
     ap.add_argument("--num-requests", type=int, default=12)
     ap.add_argument("--system-len", type=int, default=512)
-    ap.add_argument("--device", default="cpu")
+    add_engine_args(ap)
     args = ap.parse_args()
+    print(describe(args))
 
     rng = random.Random(0)
     system = [rng.randrange(100, 10000) for _ in range(args.system_len)]
@@ -36,7 +38,7 @@ def main() -> None:
     print("|---|---:|---:|---:|---:|---:|")
     outputs = {}
     for cache_type in ["naive", "radix"]:
-        llm = LLM(args.model, load_tokenizer_=False, device=args.device, max_total_tokens=16384,
+        llm = LLM(args.model, load_tokenizer_=False, **engine_kwargs(args), max_total_tokens=16384,
                   max_seq_len=2048, cache_type=cache_type)
         ttfts, outs = [], []
         t0 = time.perf_counter()
