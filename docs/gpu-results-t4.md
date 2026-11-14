@@ -1,7 +1,9 @@
 # GPU results: Tesla T4 (Colab)
 
 First run of [`notebooks/gpu_benchmarks.ipynb`](../notebooks/gpu_benchmarks.ipynb) on a real GPU.
-Raw outputs are in [`notebooks/gpu_benchmarks_t4_results.ipynb`](../notebooks/gpu_benchmarks_t4_results.ipynb).
+Raw outputs: [`gpu_benchmarks_t4_results.ipynb`](../notebooks/gpu_benchmarks_t4_results.ipynb) (first run:
+benchmarks) and [`gpu_benchmarks_t4_rerun.ipynb`](../notebooks/gpu_benchmarks_t4_rerun.ipynb) (second
+run: full test suite, serving).
 
 - **Hardware/software:** Tesla T4 (sm_75, 15 GB), CUDA 13.0, torch 2.14.1+cu130, triton 3.8.0
 - **Model and dtype:** Qwen3-0.6B in **float16**, because the T4 has no bfloat16
@@ -11,10 +13,21 @@ Raw outputs are in [`notebooks/gpu_benchmarks_t4_results.ipynb`](../notebooks/gp
 
 | Part | Status |
 |---|---|
-| Benchmarks: attention, KV cache, batching, prefix cache, speculative | ran, see below |
-| Test suite on GPU | **stopped early.** A CPU-only Triton-interpreter test ran in the same process as compiled GPU kernels and failed, and `pytest -x` then stopped before `tests/test_gpu.py`. Fixed in this commit: those tests now use CUDA when it is available, and the notebook runs `test_gpu.py` first without `-x`. **Needs a re-run.** |
-| `bench_serving.py` | only the `torch, eager` configuration finished |
-| `torch.profiler` traces | not run |
+| `tests/test_gpu.py` | **6 passed** on the T4 (details below) |
+| full test suite on the GPU | **246 passed, 4 skipped** (the 4 are slow labs behind `MINISGL_RUN_SLOW_LABS=1`) |
+| benchmarks: attention, KV cache, batching, prefix cache, speculative | ran, see below |
+| `bench_serving.py` | all three configurations ran (section 7) |
+| `torch.profiler` traces | not yet: the cell could not import `minisgl` in the notebook kernel (an editable install needs a kernel restart). Fixed in the notebook; needs a re-run. |
+| multi-GPU tensor parallelism (NCCL) | not run: a Colab T4 has one GPU |
+
+What `tests/test_gpu.py` proves on real hardware:
+
+| test | checks |
+|---|---|
+| `test_cuda_graph_fp32_matches_hf[1]`, `[16]` | captured CUDA Graph decode (Triton backend, page_size 1 and 16, batch shrinking 6 → 1 with dummy-request padding) reproduces HuggingFace greedy output token for token |
+| `test_eager_fp32_matches_hf[torch]`, `[triton]` | both attention backends on CUDA reproduce HuggingFace |
+| `test_cuda_graph_replay_equals_eager_bf16` | graph replay produces the same tokens as eager execution in half precision |
+| `test_real_model_triton_cuda_graph_fp32` | real Qwen3-0.6B, Triton + CUDA Graph, fp32 == HuggingFace |
 
 ## 1. CUDA Graph is the biggest single win
 
@@ -99,14 +112,27 @@ for sm_75 and no autotuning. Making these kernels competitive is a good next exe
 
 ## 6. Exactness in float16
 
-Some rows report `identical: False` or `lossless: False`:
+Some fp16 benchmark rows report `identical: False` or `lossless: False`:
 - batch size 32 vs torch
 - optimistic vs conservative admission
 - one-at-a-time vs batched
 - n-gram verification
 
-In fp16, different batch sizes and different verify widths run GEMMs of different shapes. Those
-round differently, and a greedy near-tie can flip. The CPU runs in fp32 match exactly. **This is
-expected but not yet proven on this GPU:** the fp32 GPU tests in `tests/test_gpu.py` check exactly
-this (fp32 graph replay == HuggingFace), and they did not run. Re-run the notebook's test cell to
-close it.
+In fp16, different batch sizes and verify widths run GEMMs of different shapes. Those round
+differently, and a greedy near-tie can flip. The fp32 GPU tests above show that the mechanisms
+themselves are exact on this GPU: Triton kernels, CUDA Graph padding, and graph replay all reproduce
+HuggingFace token for token. So these rows are floating-point batch non-invariance, not bugs. (Real
+engines handle this with "deterministic inference" modes, such as SGLang's
+`--enable-deterministic-inference`.)
+
+## 7. HTTP serving (`bench_serving.py`, 32 streaming requests)
+
+| configuration | concurrency 1: TPOT ms / tok/s | concurrency 4 | concurrency 16 |
+|---|---:|---:|---:|
+| torch, eager | 47 / 21.2 | 53 / 74.4 | 60 / 252.2 |
+| triton, eager | 44 / 21.1 | 47 / 83.9 | 49 / 313.7 |
+| triton + CUDA Graph | **12 / 75.8** | **15 / 231.4** | **25 / 540.8** |
+
+Through the whole multi-process HTTP stack (API server → tokenizer → scheduler → detokenizer →
+SSE), CUDA Graph keeps TPOT at 12–25 ms. That gives 540.8 output tok/s and 16.9 req/s at
+concurrency 16, vs 252 tok/s for the eager torch backend. Mean TTFT stays at 0.05–0.17 s.

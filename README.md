@@ -191,7 +191,10 @@ The scheduler also fixes gaps found while writing the study guide
 - N-gram speculative decoding is up to 3.3× faster on copy-heavy prompts.
 - The Triton kernels run correctly but are slower than PyTorch SDPA except for long single-sequence
   decode.
-- The GPU test suite and multi-GPU NCCL TP have not been verified yet. [notebooks/gpu_benchmarks.ipynb](notebooks/gpu_benchmarks.ipynb) runs the tests and
+- The full test suite passes on the GPU (246 passed), including CUDA Graph and Triton matching
+  HuggingFace token for token in fp32.
+- The HTTP server sustains 540 tok/s at concurrency 16.
+- Multi-GPU NCCL TP has not been verified (Colab offers a single GPU). [notebooks/gpu_benchmarks.ipynb](notebooks/gpu_benchmarks.ipynb) runs the tests and
 benchmarks on a Colab GPU:
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/willychang21/mini-sglang/blob/main/notebooks/gpu_benchmarks.ipynb)
 
