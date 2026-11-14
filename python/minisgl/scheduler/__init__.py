@@ -1,4 +1,5 @@
 from .cache import CacheManager
+from .config import SchedulerConfig
 from .decode import DecodeManager
 from .io import OfflineIO, SchedulerIO, ZmqSchedulerIO
 from .prefill import PendingReq, PrefillAdder, PrefillManager
@@ -15,6 +16,7 @@ __all__ = [
     "PrefillAdder",
     "PrefillManager",
     "Scheduler",
+    "SchedulerConfig",
     "SchedulerStats",
     "TableManager",
 ]

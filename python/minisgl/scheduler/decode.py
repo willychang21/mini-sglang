@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Iterable, Set
 
 from ..core import Batch, Req
+from .retract import reserved_output_tokens
 
 
 class DecodeManager:
@@ -19,7 +20,16 @@ class DecodeManager:
     @property
     def inflight_tokens(self) -> int:
         """KV tokens running requests may still allocate (an upper bound)."""
-        return sum(r.max_device_len - r.cached_len + self.page_size for r in self.running_reqs)
+        return self.estimated_inflight_tokens(1.0)
+
+    def estimated_inflight_tokens(self, new_token_ratio: float) -> int:
+        """Like ``inflight_tokens`` but with each request's remaining output
+        scaled by ``new_token_ratio`` (optimistic admission). Below 1 it is an
+        estimate, and decode may need to retract."""
+        return sum(
+            r.device_len - r.cached_len + reserved_output_tokens(r, new_token_ratio) + self.page_size
+            for r in self.running_reqs
+        )
 
     def filter_reqs(self, reqs: Iterable[Req]) -> None:
         self.running_reqs = {req for req in self.running_reqs.union(reqs) if req.can_decode}

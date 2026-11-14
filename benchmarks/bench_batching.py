@@ -5,8 +5,13 @@
 2. Concurrency under a fixed KV budget: paged allocation reserves only what each
    request needs; contiguous pre-allocation would reserve ``max_seq_len`` per
    request (Chapter 7, Figure 7-1).
+3. Admission policy under a tight KV budget: conservative (reserve the whole
+   ``max_tokens``) vs optimistic (reserve ``max_tokens * new_token_ratio`` and
+   retract on KV exhaustion). Two workloads: exact lengths (``ignore_eos``) and
+   chat prompts that stop at EOS long before ``max_tokens``.
 
     python benchmarks/bench_batching.py --model /path/to/Qwen3-0.6B
+    python benchmarks/bench_batching.py --model /path/to/Qwen3-0.6B --sections admission
 """
 
 from __future__ import annotations
@@ -19,12 +24,13 @@ import time
 from _common import add_engine_args, describe, engine_kwargs
 from minisgl import SamplingParams
 from minisgl.llm import LLM
+from minisgl.tokenizer import TokenizeManager
 
 
-def workload(n: int, seed: int = 0):
+def workload(n: int, seed: int = 0, prompt_len=(16, 96), output_len=(16, 64)):
     rng = random.Random(seed)
-    prompts = [[rng.randrange(100, 10000) for _ in range(rng.randrange(16, 96))] for _ in range(n)]
-    sps = [SamplingParams(max_tokens=rng.randrange(16, 64), ignore_eos=True) for _ in range(n)]
+    prompts = [[rng.randrange(100, 10000) for _ in range(rng.randrange(*prompt_len))] for _ in range(n)]
+    sps = [SamplingParams(max_tokens=rng.randrange(*output_len), ignore_eos=True) for _ in range(n)]
     return prompts, sps
 
 
@@ -37,15 +43,78 @@ def run(llm: LLM, prompts, sps):
     return outs, elapsed, tokens, ttft
 
 
+def chat_workload(n: int, max_tokens: int):
+    topics = ["France", "Japan", "Brazil", "Egypt", "Canada", "India", "Kenya", "Norway", "Peru", "Chile",
+              "Spain", "Italy", "Mexico", "Vietnam", "Greece", "Turkey"]
+    prompts = [
+        [{"role": "user", "content": f"In one short sentence, what is the capital of {topics[i % len(topics)]}?"}]
+        for i in range(n)
+    ]
+    return prompts, [SamplingParams(max_tokens=max_tokens) for _ in range(n)]
+
+
+def admission(args) -> None:
+    print("## Admission: conservative vs optimistic (retraction) under a tight KV budget\n")
+    print("| workload | admission | KV tokens | wall s | output tok/s | peak batch | mean decode batch "
+          "| retractions | identical |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|---|")
+    n = args.num_requests * 2
+    cases = [
+        ("exact lengths (ignore_eos)", *workload(n, seed=1), 1024, False),
+        ("long exact outputs (ignore_eos)", *workload(n, seed=2, prompt_len=(16, 32), output_len=(96, 160)), 1024,
+         False),
+        ("chat, stops at EOS, max_tokens=256", *chat_workload(n, 256), 2048, True),
+    ]
+    for name, prompts, sps, budget, chat in cases:
+        ref = None
+        for adm in ("conservative", "optimistic"):
+            llm = LLM(args.model, load_tokenizer_=chat, **engine_kwargs(args), max_total_tokens=budget,
+                      max_seq_len=1024, max_running_req=64, admission=adm)
+            if chat:
+                tm = TokenizeManager(llm.tokenizer)
+                prompts_ = [tm.tokenize_one(p, {"enable_thinking": False}) for p in prompts]
+            else:
+                prompts_ = prompts
+            llm.generate([prompts_[0][:8]], SamplingParams(max_tokens=2))  # warm-up
+            st = llm.scheduler.stats
+            st.batch_sizes.clear()
+            steps0, tokens0 = st.decode_steps, st.decode_tokens
+            outs, elapsed, tokens, _ = run(llm, prompts_, sps)
+            got = [o.token_ids for o in outs]
+            ref = ref or got
+            mean_decode = (st.decode_tokens - tokens0) / max(1, st.decode_steps - steps0)
+            print(f"| {name} | {adm} | {budget} | {elapsed:.1f} | {tokens / elapsed:.1f} | {max(st.batch_sizes)} "
+                  f"| {mean_decode:.1f} | {st.retracted_reqs} | {got == ref} |")
+            llm.shutdown()
+    print()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--num-requests", type=int, default=16)
+    ap.add_argument("--sections", default="batching,paged,admission",
+                    help="comma-separated subset of: batching, paged, admission")
     add_engine_args(ap)
     args = ap.parse_args()
     print(describe(args))
+    sections = set(args.sections.split(","))
+    if "admission" in sections:
+        admission(args)
+    if sections & {"batching", "paged"}:
+        legacy(args, sections)
+
+
+def legacy(args, sections) -> None:
     prompts, sps = workload(args.num_requests)
 
+    if "batching" in sections:
+        batching(args, prompts, sps)
+    if "paged" in sections:
+        paged(args, prompts, sps)
+
+
+def batching(args, prompts, sps) -> None:
     print("## Throughput: sequential vs continuous batching\n")
     print("| mode | max_running_req | wall s | output tok/s | mean TTFT s | p90 TTFT s | mean batch size |")
     print("|---|---:|---:|---:|---:|---:|---:|")
@@ -67,6 +136,9 @@ def main() -> None:
     same = results["one at a time"] == results["continuous batching"]
     print(f"\nidentical outputs in both modes: {same}\n")
 
+
+
+def paged(args, prompts, sps) -> None:
     print("## Concurrency under a fixed KV budget (paged vs contiguous)\n")
     budget, max_seq_len = 2048, 1024
     llm = LLM(args.model, load_tokenizer_=False, **engine_kwargs(args), max_total_tokens=budget,

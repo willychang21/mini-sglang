@@ -181,3 +181,42 @@ def test_children_exit_with_server(tiny_model_with_tokenizer):
         alive = [c for c in alive if os.path.exists(f"/proc/{c}") and "Z" not in open(f"/proc/{c}/stat").read().split()[2]]
         time.sleep(0.5)
     assert not alive
+
+
+def test_backpressure_flags_reach_frontend(tiny_model_with_tokenizer):
+    """A 1-byte buffer cap cuts off every request that produces text (the
+    policy itself is unit-tested in test_backpressure.py)."""
+    proc, url = _start(tiny_model_with_tokenizer, "--max-buffered-bytes", "1", "--client-stall-timeout", "5")
+    try:
+        body = {"prompt": "hello hello hello", "max_tokens": 32, "temperature": 0, "ignore_eos": True}
+        r = httpx.post(url + "/v1/completions", json=body, timeout=60)
+        assert r.status_code == 400 and "client too slow" in r.json()["error"]["message"]
+        deadline = time.time() + 10
+        while httpx.get(url + "/debug/state").json() != {"ack_map": 0, "event_map": 0}:
+            assert time.time() < deadline
+            time.sleep(0.2)
+    finally:
+        _stop(proc)
+
+
+def test_overlap_optimistic_server_matches(tiny_model_with_tokenizer, reference):
+    """The served pipeline with overlap scheduling + optimistic admission."""
+    proc, url = _start(tiny_model_with_tokenizer, "--enable-overlap", "--admission", "optimistic",
+                       "--num-tokenizers", "3")
+    prompts = [f"Overlap request {i} says" for i in range(6)]
+
+    async def run():
+        async with httpx.AsyncClient(timeout=120) as client:
+            tasks = [
+                client.post(url + "/v1/completions",
+                            json={"prompt": p, "max_tokens": 8 + i, "temperature": 0, "ignore_eos": True})
+                for i, p in enumerate(prompts)
+            ]
+            return [r.json()["choices"][0]["text"] for r in await asyncio.gather(*tasks)]
+
+    try:
+        texts = asyncio.run(run())
+    finally:
+        _stop(proc)
+    for i, (p, t) in enumerate(zip(prompts, texts)):
+        assert t == reference(p, 8 + i)

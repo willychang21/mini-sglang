@@ -40,7 +40,7 @@ def _run_scheduler(args: ServerArgs, rank: int, ack_queue) -> None:
             tp_size=args.tp_size,
             tp_cpu_group=engine.tp_cpu_group,
         )
-        scheduler = Scheduler(config, io, engine)
+        scheduler = Scheduler(config, io, engine, args.scheduler_config())
     except Exception as e:
         logger.exception("scheduler rank %d failed to start", rank)
         ack_queue.put(f"ERROR: scheduler rank {rank}: {e}")
@@ -80,7 +80,7 @@ def start_backend(args: ServerArgs) -> list:
         procs.append(
             ctx.Process(
                 target=tokenize_worker,
-                args=(args.model_path, args.tokenizer_addr, args.scheduler_addr, ack_queue, f"tokenizer-{i}"),
+                args=(args.model_path, args.tokenizer_addr(i), args.scheduler_addr, ack_queue, f"tokenizer-{i}"),
                 daemon=True,
                 name=f"minisgl-tokenizer-{i}",
             )
@@ -106,8 +106,10 @@ def launch_server(argv=None) -> None:
     args = parse_args(argv)
     state = FrontendManager(
         model_name=os.path.basename(os.path.normpath(args.model_path)),
-        send_addr=args.tokenizer_addr,
+        send_addrs=args.tokenizer_addrs,
         recv_addr=args.frontend_addr,
+        max_buffered_bytes=args.max_buffered_bytes,
+        stall_timeout=args.client_stall_timeout,
     )
     state.bind()
     set_global_state(state)

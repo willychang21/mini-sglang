@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from ..attention import SUPPORTED_ATTENTION_BACKENDS
 from ..config import EngineConfig
 from ..distributed import DistributedInfo
+from ..scheduler.config import SchedulerConfig
 
 
 @dataclass
@@ -31,6 +32,10 @@ class ServerArgs:
     attention_backend: str | None = None
     cuda_graph_max_bs: int | None = None
     disable_cuda_graph: bool = False
+    admission: str = "conservative"
+    disable_overlap: bool = True
+    max_buffered_bytes: int = 1 << 20
+    client_stall_timeout: float = 60.0
     seed: int = 0
     dist_port: int = 29517
     ipc_dir: str = field(default_factory=lambda: tempfile.gettempdir())
@@ -40,9 +45,13 @@ class ServerArgs:
         return f"ipc://{os.path.join(self.ipc_dir, f'minisgl-{self.run_id}-{name}')}"
 
     # ZMQ endpoints: frontend -> tokenizers -> scheduler -> detokenizer -> frontend
+    def tokenizer_addr(self, i: int) -> str:
+        """One endpoint per tokenizer worker: the frontend routes uid -> uid % N."""
+        return self._ipc(f"tokenizer-{i}")
+
     @property
-    def tokenizer_addr(self) -> str:
-        return self._ipc("tokenizer")
+    def tokenizer_addrs(self) -> list:
+        return [self.tokenizer_addr(i) for i in range(self.num_tokenizers)]
 
     @property
     def scheduler_addr(self) -> str:
@@ -79,6 +88,10 @@ class ServerArgs:
         return EngineConfig(**kwargs)
 
 
+    def scheduler_config(self) -> SchedulerConfig:
+        return SchedulerConfig(admission=self.admission, disable_overlap=self.disable_overlap)  # type: ignore[arg-type]
+
+
 def parse_args(argv=None) -> ServerArgs:
     p = argparse.ArgumentParser(prog="python -m minisgl", description="mini-sglang server")
     p.add_argument("--model", "--model-path", dest="model_path", required=True)
@@ -102,6 +115,37 @@ def parse_args(argv=None) -> ServerArgs:
     )
     p.add_argument("--cuda-graph-max-bs", type=int, default=None, help="largest captured decode batch")
     p.add_argument("--disable-cuda-graph", action="store_true")
+    p.add_argument(
+        "--admission",
+        choices=["conservative", "optimistic"],
+        default="conservative",
+        help="conservative: reserve each request's full max_tokens of KV (never preempts); "
+        "optimistic: reserve max_tokens * new_token_ratio and retract decode requests on KV exhaustion",
+    )
+    overlap = p.add_mutually_exclusive_group()
+    overlap.add_argument(
+        "--enable-overlap",
+        dest="disable_overlap",
+        action="store_false",
+        help="overlap scheduling: process batch N and schedule N+2 while batch N+1 runs "
+        "(off by default: on CPU it has no spare cores to overlap onto)",
+    )
+    overlap.add_argument(
+        "--disable-overlap", dest="disable_overlap", action="store_true", help="use normal_loop (default)"
+    )
+    p.set_defaults(disable_overlap=True)
+    p.add_argument(
+        "--max-buffered-bytes",
+        type=int,
+        default=1 << 20,
+        help="backpressure: abort a request whose client has more than this much undelivered text (0 = off)",
+    )
+    p.add_argument(
+        "--client-stall-timeout",
+        type=float,
+        default=60.0,
+        help="backpressure: abort a request whose replies sat unread for this many seconds (0 = off)",
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dist-port", type=int, default=29517)
     args = p.parse_args(argv)

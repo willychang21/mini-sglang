@@ -25,6 +25,7 @@ from ..core import Batch, ChunkedReq, Req, SamplingParams
 from ..kvcache import BaseCacheHandle
 from .cache import CacheManager
 from .decode import DecodeManager
+from .retract import admission_output_tokens
 from .table import TableManager
 
 
@@ -35,6 +36,7 @@ class PendingReq:
     sampling_params: SamplingParams
     output_len: int
     chunked_req: ChunkedReq | None = None  # progress of a chunked prefill
+    retracted: bool = False  # preempted while decoding; input_ids include its output
 
     @property
     def input_len(self) -> int:
@@ -55,19 +57,31 @@ class PrefillAdder:
     cache_manager: CacheManager
     table_manager: TableManager
     stats: PrefillStats = field(default_factory=PrefillStats)
+    # 1.0 = conservative admission; < 1 reserves only part of the output budget
+    new_token_ratio: float = 1.0
 
     @property
     def page_size(self) -> int:
         return self.cache_manager.page_size
 
+    def _reserve(self, output_len: int) -> int:
+        return admission_output_tokens(output_len, self.new_token_ratio)
+
     def _try_allocate_one(self, req: PendingReq) -> Tuple[BaseCacheHandle, int] | None:
         if self.table_manager.available_size == 0:
+            return None
+        # Matching is not read-only: the radix walk splits nodes and refreshes
+        # LRU timestamps. Skip it when even a fully cached prompt (only the
+        # last token to compute) could not fit, so a request that waits for
+        # memory step after step does not keep its prefix "recently used".
+        best_case = 1 + self._reserve(req.output_len) + self.page_size
+        if best_case + self.reserved_size > self.cache_manager.available_size:
             return None
         handle = self.cache_manager.match_req(req.input_ids).cuda_handle
         cached_len = handle.cached_len
         extend_len = req.input_len - cached_len
         # + page_size: the last partially filled page is allocated whole
-        estimated_len = extend_len + req.output_len + self.page_size
+        estimated_len = extend_len + self._reserve(req.output_len) + self.page_size
 
         # First check: does it fit at all?
         if estimated_len + self.reserved_size > self.cache_manager.available_size:
@@ -101,7 +115,7 @@ class PrefillAdder:
         is_chunked = chunk_size < remain_len
         cls = ChunkedReq if is_chunked else Req
         self.token_budget -= chunk_size
-        self.reserved_size += remain_len + pending_req.output_len + self.page_size
+        self.reserved_size += remain_len + self._reserve(pending_req.output_len) + self.page_size
 
         # Only token ids are written now; KV pages are allocated in
         # Scheduler._prepare_batch once the batch is final.
@@ -141,6 +155,9 @@ class PrefillManager:
         self.table_manager = table_manager
         self.decode_manager = decode_manager
         self.pending_list: List[PendingReq] = []
+        # fraction of output_len reserved at admission; set by the scheduler
+        # (1.0 = conservative, < 1 under optimistic admission)
+        self.new_token_ratio = 1.0
         self.stats = PrefillStats()
 
     @property
@@ -150,15 +167,28 @@ class PrefillManager:
     def add_one_req(self, pending_req: PendingReq) -> None:
         self.pending_list.append(pending_req)
 
+    def add_retracted(self, pending_reqs: List[PendingReq]) -> None:
+        """Retracted requests go to the front of the queue (they are older than
+        anything waiting), but behind unfinished chunked prefills: those hold
+        KV pages and must be allowed to finish, or a retracted request that does
+        not fit could block them forever."""
+        n_chunked = 0
+        while n_chunked < len(self.pending_list) and self.pending_list[n_chunked].chunked_req:
+            n_chunked += 1
+        retracted = sorted(pending_reqs, key=lambda p: p.uid)
+        self.pending_list[n_chunked:n_chunked] = retracted
+
     def schedule_next_batch(self, prefill_budget: int) -> Batch | None:
         if len(self.pending_list) == 0:
             return None
+        new_token_ratio = self.new_token_ratio
         adder = PrefillAdder(
             token_budget=prefill_budget,
-            reserved_size=self.decode_manager.inflight_tokens,
+            reserved_size=self.decode_manager.estimated_inflight_tokens(new_token_ratio),
             cache_manager=self.cache_manager,
             table_manager=self.table_manager,
             stats=self.stats,
+            new_token_ratio=new_token_ratio,
         )
         reqs: List[Req] = []
         chunked_list: List[PendingReq] = []

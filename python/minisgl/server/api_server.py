@@ -64,20 +64,77 @@ class OpenAICompletionRequest(BaseModel):
 
 # ---------------------------------------------------------- frontend state
 class FrontendManager:
-    def __init__(self, model_name: str, send_addr: str, recv_addr: str) -> None:
+    """Per-uid state of the API server.
+
+    Routing to tokenizers (multi-tokenizer abort race): with one PUSH socket
+    shared by N tokenizers, ZMQ round-robins *messages*, so a request's
+    ``TokenizeMsg`` and its later ``AbortMsg`` may go to different tokenizers.
+    The abort then overtakes the (slower) tokenization and reaches the scheduler
+    first, where it is ignored, and the request runs to completion. Instead we
+    keep one PUSH socket per tokenizer and send every message of ``uid`` to
+    tokenizer ``uid % N``. A tokenizer handles its inbox in order and ZMQ keeps
+    per-socket FIFO order, so per-uid order is preserved end to end
+    (frontend -> tokenizer[uid % N] -> scheduler).
+
+    Backpressure (slow or stuck clients, Chapter 5 Section 5.4): the shared
+    ``listen`` coroutine appends replies to ``ack_map[uid]`` as fast as the
+    backend produces them, whether or not the client reads. We cannot slow
+    the scheduler down for one request (it is batched with everyone else),
+    so the policy is "bound, then cancel":
+
+    1. *Coalesce*: once ``coalesce_after`` replies are waiting, a new reply is
+       merged into the last undelivered one (text is concatenated, the latest
+       status wins), so ``ack_map[uid]`` never holds more than that many
+       objects and its cost is the undelivered text, not one object per
+       token. A slow streaming client simply gets bigger chunks; a client
+       that keeps up still sees one reply per token.
+    2. *Size cap*: if undelivered text exceeds ``max_buffered_bytes``.
+    3. *Stall timeout*: if replies have been waiting for longer than
+       ``stall_timeout`` seconds without the consumer taking them.
+
+    On (2) or (3) the request is aborted upstream (``AbortMsg``, which frees
+    its KV and slot in the scheduler), further replies are dropped, and the
+    buffer is replaced by one terminal error reply. If the consumer never comes
+    back, the reaper drops that last entry after another ``stall_timeout``.
+    Either limit can be disabled with 0.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        send_addrs: str | List[str] | None = None,
+        recv_addr: str = "",
+        max_buffered_bytes: int = 1 << 20,
+        stall_timeout: float = 60.0,
+        coalesce_after: int = 64,
+        send_addr: str | None = None,  # pre-routing spelling: one tokenizer address
+    ) -> None:
         self.model_name = model_name
-        self.send_addr = send_addr
+        if send_addrs is None:
+            assert send_addr is not None, "send_addrs is required"
+            send_addrs = send_addr
+        self.send_addrs = [send_addrs] if isinstance(send_addrs, str) else list(send_addrs)
+        assert len(self.send_addrs) > 0
         self.recv_addr = recv_addr
         self.uid_counter = 0
         self.ack_map: Dict[int, List[UserReply]] = {}
         self.event_map: Dict[int, asyncio.Event] = {}
-        self._send: ZmqAsyncPushQueue | None = None
+        self._send: List[ZmqAsyncPushQueue] = []
         self._recv: ZmqAsyncPullQueue | None = None
         self._listener: asyncio.Task | None = None
+        # backpressure bookkeeping
+        self.max_buffered_bytes = max_buffered_bytes
+        self.stall_timeout = stall_timeout
+        self.coalesce_after = max(1, coalesce_after)
+        self._buffered_bytes: Dict[int, int] = {}  # undelivered text per uid
+        self._last_drain: Dict[int, float] = {}  # when the consumer last took replies
+        self._closed: Dict[int, float] = {}  # uid -> time it was cut off
+        self._reaper: asyncio.Task | None = None
+        self.num_backpressure_aborts = 0
 
     def bind(self) -> None:
         """Create sockets before the backend starts so workers can connect."""
-        self._send = ZmqAsyncPushQueue(self.send_addr, bind=True)
+        self._send = [ZmqAsyncPushQueue(addr, bind=True) for addr in self.send_addrs]
         self._recv = ZmqAsyncPullQueue(self.recv_addr, bind=True)
 
     def new_user(self) -> int:
@@ -85,26 +142,76 @@ class FrontendManager:
         self.uid_counter += 1
         self.ack_map[uid] = []
         self.event_map[uid] = asyncio.Event()
+        self._buffered_bytes[uid] = 0
+        self._last_drain[uid] = time.monotonic()
         return uid
 
+    def _forget(self, uid: int) -> None:
+        for d in (self.ack_map, self.event_map, self._buffered_bytes, self._last_drain, self._closed):
+            d.pop(uid, None)  # type: ignore[attr-defined]
+
     def _create_listener_once(self) -> None:
+        loop = asyncio.get_running_loop()
         if self._listener is None or self._listener.done():
-            self._listener = asyncio.get_running_loop().create_task(self.listen())
+            self._listener = loop.create_task(self.listen())
+        if self.stall_timeout > 0 and (self._reaper is None or self._reaper.done()):
+            self._reaper = loop.create_task(self.reap_stalled())
+
+    def route(self, uid: int) -> int:
+        """Index of the tokenizer that owns every message of ``uid``."""
+        return uid % len(self.send_addrs)
 
     async def send_one(self, msg: BaseMsg) -> None:
         self._create_listener_once()
-        assert self._send is not None
-        await self._send.put(msg)
+        assert self._send, "call bind() first"
+        uid = getattr(msg, "uid")  # TokenizeMsg / AbortMsg are always uid-tagged
+        send = self._send[self.route(uid)] if isinstance(self._send, list) else self._send  # a test double
+        await send.put(msg)
 
     async def listen(self) -> None:
         assert self._recv is not None
         while True:
             msg = await self._recv.get()
             for reply in unwrap_msg(msg):
-                if not isinstance(reply, UserReply) or reply.uid not in self.ack_map:
-                    continue  # e.g. late tokens of a cancelled request
-                self.ack_map[reply.uid].append(reply)
-                self.event_map[reply.uid].set()
+                if isinstance(reply, UserReply):
+                    await self.dispatch(reply)
+
+    async def dispatch(self, reply: UserReply) -> None:
+        uid = reply.uid
+        if uid not in self.ack_map or uid in self._closed:
+            return  # e.g. late tokens of a cancelled request
+        pending = self.ack_map[uid]
+        if len(pending) >= self.coalesce_after:  # consumer far behind: coalesce
+            pending[-1] = _merge(pending[-1], reply)
+        else:
+            pending.append(reply)
+        self._buffered_bytes[uid] += len(reply.incremental_output.encode())
+        self.event_map[uid].set()
+        if 0 < self.max_buffered_bytes < self._buffered_bytes[uid] and not reply.finished:
+            await self._cut_off(uid, f"client too slow: more than {self.max_buffered_bytes} bytes undelivered")
+
+    async def _cut_off(self, uid: int, reason: str) -> None:
+        """Backpressure abort: free backend resources, end the request with an error."""
+        logger.warning("aborting request %d: %s", uid, reason)
+        self.num_backpressure_aborts += 1
+        self._closed[uid] = time.monotonic()
+        self.ack_map[uid] = [UserReply(uid=uid, incremental_output="", finished=True, finish_reason="abort", error=reason)]
+        self._buffered_bytes[uid] = 0
+        self.event_map[uid].set()
+        await self.send_one(AbortMsg(uid=uid))
+
+    async def reap_stalled(self) -> None:
+        """Periodically cut off consumers that stopped taking their replies."""
+        interval = max(0.01, min(1.0, self.stall_timeout / 4))
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+            for uid in list(self.ack_map):
+                if uid in self._closed:
+                    if now - self._closed[uid] > self.stall_timeout:
+                        self._forget(uid)  # the consumer never came back
+                elif self.ack_map[uid] and now - self._last_drain[uid] > self.stall_timeout:
+                    await self._cut_off(uid, f"client stalled for more than {self.stall_timeout:g}s")
 
     async def wait_for_ack(self, uid: int) -> AsyncIterator[UserReply]:
         event = self.event_map[uid]
@@ -112,19 +219,26 @@ class FrontendManager:
             while True:
                 await event.wait()  # 1. wait for a notification
                 event.clear()  # 2. reset the flag (replies stay in the list)
+                if uid not in self.ack_map:  # reaped while we were away
+                    yield UserReply(uid, "", True, "abort", error="request was cut off (client stalled)")
+                    return
                 pending = self.ack_map[uid]  # 3. take the list, leave a fresh one
                 self.ack_map[uid] = []
+                self._buffered_bytes[uid] = 0
+                self._last_drain[uid] = time.monotonic()
                 for ack in pending:  # 4. hand out every reply
                     yield ack
                     if ack.finished:
                         return
+                    self._last_drain[uid] = time.monotonic()
         finally:  # runs on normal end, early close, and cancellation
-            self.ack_map.pop(uid, None)
-            self.event_map.pop(uid, None)
+            self._forget(uid)
 
     async def abort_user(self, uid: int) -> None:
-        self.ack_map.pop(uid, None)
-        self.event_map.pop(uid, None)
+        already_cut_off = uid in self._closed
+        self._forget(uid)
+        if already_cut_off:
+            return  # the backend was told when we cut it off
         logger.info("aborting request %d", uid)
         await self.send_one(AbortMsg(uid=uid))
 
@@ -136,6 +250,19 @@ class FrontendManager:
                 last = reply
         assert last is not None
         return {"text": text, "reply": last}
+
+
+def _merge(old: UserReply, new: UserReply) -> UserReply:
+    """Two consecutive replies of one request -> one (incremental text appends)."""
+    return UserReply(
+        uid=new.uid,
+        incremental_output=old.incremental_output + new.incremental_output,
+        finished=new.finished,
+        finish_reason=new.finish_reason,
+        num_prompt_tokens=new.num_prompt_tokens or old.num_prompt_tokens,
+        num_output_tokens=new.num_output_tokens,
+        error=new.error or old.error,
+    )
 
 
 _STATE: FrontendManager | None = None

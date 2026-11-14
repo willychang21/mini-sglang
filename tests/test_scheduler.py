@@ -18,7 +18,19 @@ def _prompts(n=8, seed=0, shared=5):
     return [base + [rng.randrange(500) for _ in range(rng.randrange(1, 30))] for _ in range(n)]
 
 
+LOOP = "normal"
+
+
+@pytest.fixture(autouse=True, params=["normal", "overlap"])
+def _loop(request):
+    """Every test runs under both scheduler loops."""
+    global LOOP
+    LOOP = request.param
+    yield
+
+
 def _llm(path, **kw):
+    kw.setdefault("disable_overlap", LOOP == "normal")
     kw.setdefault("max_total_tokens", 1024)
     kw.setdefault("max_seq_len", 256)
     return LLM(path, load_tokenizer_=False, device="cpu", **kw)
@@ -147,3 +159,25 @@ def test_sampling_is_seeded_and_respects_top_k(tiny_model):
     mixed = llm.generate(prompts, [hot, greedy, hot])
     ref = llm.generate([prompts[1]], greedy)[0]
     assert mixed[1].token_ids == ref.token_ids  # greedy rows stay greedy in mixed batches
+
+
+def test_out_of_vocab_ids_are_rejected(tiny_model):
+    """ISSUES.md #2: an id >= vocab_size used to raise IndexError in the loop."""
+    llm = _llm(tiny_model)
+    bad = llm.generate([[1, 600, 2], [-1, 3], [5, 6, 7]], SamplingParams(max_tokens=3, ignore_eos=True))
+    assert [o.finish_reason for o in bad] == ["error", "error", "length"]
+    assert "token ids" in bad[0].error and len(bad[2].token_ids) == 3
+
+
+def test_hopeless_request_does_not_touch_radix_tree(tiny_model):
+    """ISSUES.md #4 (scheduler side): no match_prefix while even a fully cached
+    prompt could not fit, so waiting requests do not split nodes / bump LRU."""
+    llm = _llm(tiny_model, max_total_tokens=120, max_running_req=4)
+    sched = llm.scheduler
+    calls = []
+    orig = sched.cache_manager.match_req
+    sched.cache_manager.match_req = lambda ids: calls.append(len(ids)) or orig(ids)
+    # three requests that each reserve ~100 tokens: only one fits at a time
+    outs = llm.generate([[i] * 4 for i in range(1, 4)], SamplingParams(max_tokens=90, ignore_eos=True))
+    assert all(len(o.token_ids) == 90 for o in outs)
+    assert len(calls) == 3  # one successful match each, no matching while waiting
