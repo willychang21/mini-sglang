@@ -92,6 +92,7 @@ class SpecRoundStats:
     proposed: int = 0
     accepted: int = 0
     committed: int = 0  # tokens produced by verify steps (accepted + correction/bonus)
+    trimmed: int = 0  # proposals dropped because the round's pages did not fit
     accepted_per_round: List[int] = field(default_factory=list)
 
     @property
@@ -295,6 +296,7 @@ class SpecWorker:
             base = div_ceil(L, ps)
             while k > 0 and div_ceil(L + k, ps) - base > spare:
                 k -= 1
+                self.stats.trimmed += 1
             spare -= div_ceil(L + k, ps) - base
             fitted.append(k)
         return fitted

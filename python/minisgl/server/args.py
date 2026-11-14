@@ -34,6 +34,10 @@ class ServerArgs:
     disable_cuda_graph: bool = False
     admission: str = "conservative"
     disable_overlap: bool = True
+    speculative_algorithm: str = "none"
+    speculative_num_draft_tokens: int = 4
+    speculative_draft_model: str | None = None
+    speculative_draft_num_layers: int | None = None
     max_buffered_bytes: int = 1 << 20
     client_stall_timeout: float = 60.0
     seed: int = 0
@@ -89,7 +93,14 @@ class ServerArgs:
 
 
     def scheduler_config(self) -> SchedulerConfig:
-        return SchedulerConfig(admission=self.admission, disable_overlap=self.disable_overlap)  # type: ignore[arg-type]
+        return SchedulerConfig(
+            admission=self.admission,  # type: ignore[arg-type]
+            disable_overlap=self.disable_overlap,
+            speculative_algorithm=self.speculative_algorithm,  # type: ignore[arg-type]
+            speculative_num_draft_tokens=self.speculative_num_draft_tokens,
+            speculative_draft_model=self.speculative_draft_model,
+            speculative_draft_num_layers=self.speculative_draft_num_layers,
+        )
 
 
 def parse_args(argv=None) -> ServerArgs:
@@ -135,6 +146,25 @@ def parse_args(argv=None) -> ServerArgs:
     )
     p.set_defaults(disable_overlap=True)
     p.add_argument(
+        "--speculative-algorithm",
+        choices=["none", "ngram", "draft_model"],
+        default="none",
+        help="speculative decoding for running requests (docs/speculative-in-scheduler.md); "
+        "requires the normal loop, so --enable-overlap is rejected with it",
+    )
+    p.add_argument(
+        "--speculative-num-draft-tokens", type=int, default=4, help="k: proposals per request per round"
+    )
+    p.add_argument(
+        "--speculative-draft-model", default=None, help="draft_model: checkpoint path (default: the target's)"
+    )
+    p.add_argument(
+        "--speculative-draft-num-layers",
+        type=int,
+        default=None,
+        help="draft_model: load only the first N layers of the draft checkpoint",
+    )
+    p.add_argument(
         "--max-buffered-bytes",
         type=int,
         default=1 << 20,
@@ -149,4 +179,10 @@ def parse_args(argv=None) -> ServerArgs:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dist-port", type=int, default=29517)
     args = p.parse_args(argv)
+    if args.speculative_algorithm != "none" and not args.disable_overlap:
+        p.error("--speculative-algorithm requires the normal loop; drop --enable-overlap")
+    if args.speculative_algorithm == "draft_model" and args.tp_size > 1:
+        p.error("--speculative-algorithm draft_model does not support --tp-size > 1")
+    if args.speculative_num_draft_tokens < 1:
+        p.error("--speculative-num-draft-tokens must be >= 1")
     return ServerArgs(**vars(args))

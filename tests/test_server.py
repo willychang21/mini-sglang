@@ -220,3 +220,38 @@ def test_overlap_optimistic_server_matches(tiny_model_with_tokenizer, reference)
         _stop(proc)
     for i, (p, t) in enumerate(zip(prompts, texts)):
         assert t == reference(p, 8 + i)
+
+
+@pytest.mark.parametrize("algo", [["ngram"], ["draft_model", "--speculative-draft-num-layers", "1"]])
+def test_speculative_server_matches(tiny_model_with_tokenizer, reference, algo):
+    """Speculative decoding through the served pipeline: several tokens per
+    request per step must stream out in order and match target-only output."""
+    proc, url = _start(tiny_model_with_tokenizer, "--speculative-algorithm", *algo,
+                       "--speculative-num-draft-tokens", "3", "--page-size", "4")
+    prompts = [f"Speculative request {i} repeats repeats repeats" for i in range(4)]
+
+    async def run():
+        async with httpx.AsyncClient(timeout=120) as client:
+            tasks = [
+                client.post(url + "/v1/completions",
+                            json={"prompt": p, "max_tokens": 10 + 3 * i, "temperature": 0, "ignore_eos": True})
+                for i, p in enumerate(prompts)
+            ]
+            texts = [r.json()["choices"][0]["text"] for r in await asyncio.gather(*tasks)]
+            # streaming: pieces concatenate to the same text
+            pieces = []
+            async with client.stream("POST", url + "/v1/completions",
+                                     json={"prompt": prompts[0], "max_tokens": 10, "temperature": 0,
+                                           "ignore_eos": True, "stream": True}) as r:
+                async for line in r.aiter_lines():
+                    if line.startswith("data: ") and line != "data: [DONE]":
+                        pieces.append(json.loads(line[6:])["choices"][0]["text"])
+            return texts, "".join(pieces)
+
+    try:
+        texts, streamed = asyncio.run(run())
+    finally:
+        _stop(proc)
+    for i, (p, t) in enumerate(zip(prompts, texts)):
+        assert t == reference(p, 10 + 3 * i)
+    assert streamed == texts[0]
