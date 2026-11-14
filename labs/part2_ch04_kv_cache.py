@@ -7,6 +7,9 @@ What it shows
      and ``out_loc`` for one request (prefill, then decode steps).
   4. Why ``allocate_paged`` must run *before* ``out_loc = page_table[input_mapping]``.
   5. KV cache vs. no cache: identical tokens, far fewer computed positions.
+  6. Two requests in one batch: packed positions/out_loc, the visibility rule
+     ``key j visible to query t  iff  j <= cached_len + t`` of
+     ``attention/torch_backend.py``, and why ``layer_id`` is needed to read K/V.
 
     python labs/part2_ch04_kv_cache.py [--model tiny|real] [--page-size 4]
 """
@@ -126,6 +129,52 @@ def main(argv=None) -> None:
     assert ref == cached
     print("-> without a cache step t recomputes all prompt_len+t positions: sum is O(n^2) tokens;")
     print("   with it each decode step computes 1 new position (attention still reads all n).")
+
+
+    # ------------------------------------------------------------------ 6
+    section("6. two requests in one batch: packed out_loc and the attention mask")
+    seen = []
+
+    def traced_prepare2(batch):
+        fi = orig_prepare(batch)
+        md = batch.attn_metadata
+        seen.append((batch.phase, [(r.uid, r.cached_len, r.device_len) for r in batch.reqs],
+                     fi.batch.positions.tolist(), fi.batch.out_loc.tolist(), md.mask[:, 0].clone()))
+        return fi
+
+    sched._prepare_batch = traced_prepare2
+    lens = (5, 3)
+    prompts2 = [list(range(40, 40 + lens[0])), list(range(80, 80 + lens[1]))]
+    llm.generate(prompts2, SamplingParams(max_tokens=2, ignore_eos=True))
+    sched._prepare_batch = orig_prepare
+    for phase, reqs, positions, out_loc, mask in seen:
+        print(f"{phase}: reqs (uid, cached_len, device_len) = {reqs}")
+        print(f"  positions = {positions}")
+        print(f"  out_loc   = {out_loc}   (len = sum of extend_len = {sum(d - c for _, c, d in reqs)})")
+        assert len(out_loc) == sum(d - c for _, c, d in reqs) == len(positions)
+        for i, (_, c, d) in enumerate(reqs):
+            rows = []
+            for t in range(d - c):  # only real query rows; padded rows are dropped after SDPA
+                expect = [int(j <= c + t and j < d) for j in range(mask.shape[-1])]
+                got = mask[i, t].int().tolist()
+                assert got == expect, (phase, i, t, got, expect)
+                rows.append("".join("1" if x else "." for x in got))
+            print(f"  req {i}: query rows t=0..{d - c - 1}, key columns j=0..{mask.shape[-1] - 1} (1 = visible)")
+            for t, r in enumerate(rows):
+                print(f"     t={t} (pos {c + t}): {r}")
+    assert seen[0][0] == "prefill" and seen[1][0] == "decode"
+    print("-> queries are packed ([8] tokens), but each request gets its own causal triangle over")
+    print("   keys gathered from its own page_table row, so there is no cross-request visibility.")
+    print("   decode: one query row per request that sees its whole history (j <= cached_len);")
+    print("   padded key columns (j >= device_len) stay hidden.")
+
+    slot = seen[0][3][0]
+    k0 = eng.kv_cache.flat_k_cache(0)[slot]
+    k1 = eng.kv_cache.flat_k_cache(1)[slot]
+    print(f"slot {slot}: layer-0 K != layer-1 K -> {not torch.equal(k0, k1)}"
+          " (the same token slot exists once per layer, so reads need layer_id)")
+    assert not torch.equal(k0, k1)
+    cm.check_integrity()
 
 
 if __name__ == "__main__":
