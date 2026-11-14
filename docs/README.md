@@ -17,6 +17,7 @@ playbook** → **self-check** → **contribution rehearsal**.
 | Part III | [Ch1 attention backends](part3/ch01-attention-backends.md) · [Ch2 quantization](part3/ch02-quantization.md) · [Ch3 hierarchical caching](part3/ch03-hierarchical-caching.md) · [Ch4 scaling out](part3/ch04-scaling-out.md) · [Ch5 PD disaggregation](part3/ch05-pd-disaggregation.md) |
 | Part IV | [Ch1 deploying](part4/ch01-deploying-with-cookbook.md) · [Ch2 profiling](part4/ch02-profiling.md) + [trace walkthrough](part4/profiling-walkthrough.md) · [Ch3 PR workflow](part4/ch03-pr-workflow.md) |
 | [contributing-to-sglang.md](contributing-to-sglang.md) | dev setup, tests, lint, CI, review etiquette, five researched open issues with plans |
+| [gpu-results-t4.md](gpu-results-t4.md) | first real-GPU run (Tesla T4): CUDA Graph, batching, prefix cache, speculation and Triton kernel numbers, with interpretation |
 | [self-check.md](self-check.md) | 45-question readiness quiz with answers |
 | [contribution-rehearsal/](contribution-rehearsal/README.md) | an end-to-end, unsubmitted SGLang contribution (#10492 import-time slice, pinned to `bd47834`): root cause, patch, PR description, submission checklist |
 | [../labs/](../labs/README.md) | runnable CPU labs used by the chapter notes |

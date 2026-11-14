@@ -184,9 +184,14 @@ The scheduler also fixes gaps found while writing the study guide
 | CUDA Graph decode with a dummy page | on by default on CUDA, `--disable-cuda-graph` | [attention-backends.md](docs/attention-backends.md) |
 | Batched speculative decoding (n-gram or draft model) | `--speculative-algorithm ngram` | [speculative-in-scheduler.md](docs/speculative-in-scheduler.md) |
 
-GPU-only parts (Triton on GPU, CUDA Graph capture, NCCL TP) are written and reviewed, but have
-only been exercised on CPU: the Triton kernels via `TRITON_INTERPRET=1`, the graph padding logic
-by unit tests. [notebooks/gpu_benchmarks.ipynb](notebooks/gpu_benchmarks.ipynb) runs the tests and
+**First GPU run (Tesla T4, fp16):** [docs/gpu-results-t4.md](docs/gpu-results-t4.md)
+- CUDA Graph cuts decode TPOT from 56 to 12.7 ms at batch size 1, because eager decode of a 0.6B
+  model is launch-overhead bound.
+- Continuous batching plus CUDA Graph reaches 530 output tok/s, vs 22 tok/s one request at a time.
+- N-gram speculative decoding is up to 3.3× faster on copy-heavy prompts.
+- The Triton kernels run correctly but are slower than PyTorch SDPA except for long single-sequence
+  decode.
+- The GPU test suite and multi-GPU NCCL TP have not been verified yet. [notebooks/gpu_benchmarks.ipynb](notebooks/gpu_benchmarks.ipynb) runs the tests and
 benchmarks on a Colab GPU:
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/willychang21/mini-sglang/blob/main/notebooks/gpu_benchmarks.ipynb)
 

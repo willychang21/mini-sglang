@@ -63,8 +63,13 @@ def test_padded_decode_matches_hf(tiny_model, hf_reference, page_size):
     from minisgl.attention.triton_backend import TritonAttnBackend
 
     hf = hf_reference(tiny_model)
-    llm = LLM(tiny_model, load_tokenizer_=False, device="cpu", attention_backend="triton",
-              page_size=page_size, max_total_tokens=512, max_seq_len=128, max_running_req=8)
+    # On a GPU machine run the real kernels (fp32 so the output can match HF
+    # token for token). Mixing the Triton interpreter with compiled kernels in
+    # one process does not work, so the CPU path is only taken without a GPU.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    llm = LLM(tiny_model, load_tokenizer_=False, device=device, dtype="float32",
+              attention_backend="triton", page_size=page_size, max_total_tokens=512,
+              max_seq_len=128, max_running_req=8)
     engine = llm.engine
     runner = GraphRunner(engine.model, engine.ctx, [1, 2, 4, 8], engine.dummy_row,
                          engine.dummy_slot, engine.device, use_cuda_graph=False)
