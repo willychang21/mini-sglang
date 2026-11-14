@@ -9,8 +9,11 @@ from .retract import reserved_output_tokens
 
 
 class DecodeManager:
-    def __init__(self, page_size: int) -> None:
+    def __init__(self, page_size: int, spec_reserve: int = 0) -> None:
         self.page_size = page_size
+        # speculative decoding: a round writes up to k proposals' K/V before
+        # the rejected ones are freed, so each request may briefly hold k more
+        self.spec_reserve = spec_reserve
         self.running_reqs: Set[Req] = set()
 
     @property
@@ -27,7 +30,11 @@ class DecodeManager:
         scaled by ``new_token_ratio`` (optimistic admission). Below 1 it is an
         estimate, and decode may need to retract."""
         return sum(
-            r.device_len - r.cached_len + reserved_output_tokens(r, new_token_ratio) + self.page_size
+            r.device_len
+            - r.cached_len
+            + reserved_output_tokens(r, new_token_ratio)
+            + self.page_size
+            + self.spec_reserve
             for r in self.running_reqs
         )
 

@@ -57,6 +57,7 @@
 | sampling acceptance | `speculative/verify.py:rejection_commit` | residual with a numerical fallback to `p` if its mass is ≤ 1e-12 |
 | processed distributions | `speculative/verify.py:logits_to_probs` | temperature, top-k, top-p applied before verification |
 | vocabulary check | `SpeculativeDecoder.__init__` | raises if target and draft vocab sizes differ |
+| **batched, in the scheduler** | `speculative/worker.py:SpecWorker`, `scheduler/scheduler.py:Scheduler._prepare_verify` / `_process_verify` | verify batch = `Batch(phase="verify")`; see [speculative-in-scheduler.md](../../speculative-in-scheduler.md) |
 
 ## This repo vs. the tutorial's reference code
 
@@ -67,9 +68,13 @@
   `greedy_commit` has the same structure as the tutorial's teaching function
   (EOS taken from a set instead of one id), `rejection_commit` implements its §5.1
   fragment for a whole round.
-* **Offline, one sequence, outside the scheduler.** `SpeculativeDecoder` drives
-  an `Engine` directly through `SequenceRunner`; it is not wired into
-  `Scheduler`, the server or continuous batching. SGLang verifies batches of
+* **Offline, one sequence, outside the scheduler** (this chapter's code).
+  `SpeculativeDecoder` drives an `Engine` directly through `SequenceRunner`.
+  **Now integrated:** the same round also runs for a whole batch inside the
+  continuous-batching scheduler and the server
+  (`--speculative-algorithm ngram|draft_model`, `speculative/worker.py`), on
+  the paged KV cache with the radix cache, retraction and aborts — see
+  [speculative-in-scheduler.md](../../speculative-in-scheduler.md). SGLang verifies batches of
   requests with tree-shaped drafts, custom masks and `retrieve_*` indices
   (`EagleVerifyInput`); here the draft is linear and the mask is the ordinary
   causal one.

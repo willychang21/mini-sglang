@@ -59,13 +59,15 @@ class PrefillAdder:
     stats: PrefillStats = field(default_factory=PrefillStats)
     # 1.0 = conservative admission; < 1 reserves only part of the output budget
     new_token_ratio: float = 1.0
+    # speculative decoding: k proposals per round are written before rejection
+    spec_reserve: int = 0
 
     @property
     def page_size(self) -> int:
         return self.cache_manager.page_size
 
     def _reserve(self, output_len: int) -> int:
-        return admission_output_tokens(output_len, self.new_token_ratio)
+        return admission_output_tokens(output_len, self.new_token_ratio) + self.spec_reserve
 
     def _try_allocate_one(self, req: PendingReq) -> Tuple[BaseCacheHandle, int] | None:
         if self.table_manager.available_size == 0:
@@ -189,6 +191,7 @@ class PrefillManager:
             table_manager=self.table_manager,
             stats=self.stats,
             new_token_ratio=new_token_ratio,
+            spec_reserve=self.decode_manager.spec_reserve,
         )
         reqs: List[Req] = []
         chunked_list: List[PendingReq] = []

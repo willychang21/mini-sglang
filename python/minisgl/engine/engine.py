@@ -44,7 +44,11 @@ def resolve_device(device: str, tp_rank: int, tp_size: int) -> torch.device:
 
 
 class Engine:
-    def __init__(self, config: EngineConfig) -> None:
+    def __init__(self, config: EngineConfig, page_table: torch.Tensor | None = None) -> None:
+        """``page_table``: share another engine's table (a speculative *draft*
+        engine). Both KV pools then use the same slot numbering, so one
+        allocator / radix cache manages both (SGLang: the draft worker shares
+        ``req_to_token_pool`` and ``token_to_kv_pool_allocator``)."""
         # TP info must be set before any layer is built (layers size their
         # weights with get_tp_info()).
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
@@ -79,9 +83,14 @@ class Engine:
         )
         # One row per running request; entries are raw *token slots*. The extra
         # last row belongs to the dummy request and points at the dummy page.
-        self.page_table = torch.zeros(
-            (config.max_running_req + 1, self.max_seq_len), dtype=torch.int64, device=self.device
-        )
+        if page_table is not None:
+            assert page_table.shape[0] == config.max_running_req + 1
+            self.max_seq_len = min(self.max_seq_len, page_table.shape[1])
+            self.page_table = page_table
+        else:
+            self.page_table = torch.zeros(
+                (config.max_running_req + 1, self.max_seq_len), dtype=torch.int64, device=self.device
+            )
         self.dummy_row = config.max_running_req
         self.dummy_slot = self.num_pages * config.page_size  # first slot of the dummy page
         self.page_table[self.dummy_row].fill_(self.dummy_slot)

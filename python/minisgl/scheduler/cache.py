@@ -186,6 +186,20 @@ class CacheManager:
             req.cached_len = keep_len  # the request object is discarded after this
         self.cache_req(req, finished=True)
 
+    def free_spec_tail(self, req: Req, alloc_len: int) -> None:
+        """After speculative verification: return the pages past the confirmed
+        path. The round allocated pages for ``[0, alloc_len)``; the request
+        keeps the pages covering ``[0, cached_len)`` (the page holding
+        position ``cached_len`` too, if it is partially filled: its stale
+        slots are overwritten next round). Pages that only ever held rejected
+        proposals go straight back to the free list - they were never in the
+        prefix cache."""
+        ps = self.page_size
+        keep = div_ceil(req.cached_len, ps) * ps
+        end = div_ceil(alloc_len, ps) * ps
+        if end > keep:
+            self._free(self.page_table[req.table_idx, keep:end].clone())
+
     # -------------------------------------------------------------- checking
     def check_integrity(self) -> None:
         self.prefix_cache.check_integrity()

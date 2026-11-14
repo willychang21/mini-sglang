@@ -36,6 +36,7 @@ from ..config import EngineConfig
 from ..core import Batch, ChunkedReq, Req
 from ..engine import BatchSamplingArgs, Engine, ForwardOutput
 from ..message import AbortBackendMsg, BaseBackendMsg, DetokenizeMsg, ExitMsg, UserMsg
+from ..speculative.worker import SpecVerifyInfo, SpecWorker, create_spec_worker
 from ..utils import div_ceil, init_logger
 from .cache import CacheManager
 from .config import SchedulerConfig
@@ -51,10 +52,13 @@ logger = init_logger(__name__)
 @dataclass
 class ForwardInput:
     batch: Batch
-    sample_args: BatchSamplingArgs
+    sample_args: BatchSamplingArgs | None  # None for a speculative verify batch
     input_mapping: Tuple[torch.Tensor, torch.Tensor]  # (row, position) of each input token
     output_mapping: Tuple[torch.Tensor, torch.Tensor]  # where sampled tokens are stored
     output_rows: torch.Tensor  # which batch rows produce a real token
+    # speculative verify batch (SGLang ``batch.spec_info``): tokens are not
+    # sampled from the logits but committed by ``SpecWorker.commit``
+    spec_info: SpecVerifyInfo | None = None
 
 
 @dataclass
@@ -117,6 +121,7 @@ class SchedulerStats:
     # been aborted / retracted by the time the batch was processed
     discarded_tokens: int = 0
     batch_sizes: List[int] = field(default_factory=list)
+    verify_steps: int = 0  # speculative rounds (target forwards in verify mode)
 
 
 class Scheduler:
@@ -144,7 +149,7 @@ class Scheduler:
             self.engine.page_table,
             config.cache_type,
         )
-        self.decode_manager = DecodeManager(self.page_size)
+        self.decode_manager = DecodeManager(self.page_size, self.sched_config.spec_reserve_tokens)
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
         )
@@ -174,6 +179,24 @@ class Scheduler:
         self._graveyard: List[Tuple[int, Req]] = []
         self._processed = 0  # seq of the last processed batch
         self.finished_reqs: Set[Req] = set()
+
+        # ---- speculative decoding (docs/speculative-in-scheduler.md)
+        self.spec: SpecWorker | None = None
+        if self.sched_config.speculative:
+            if self.overlap:
+                # A round's lengths depend on how many proposals the *previous*
+                # round accepted, so the next batch cannot be scheduled while
+                # this one runs (SGLang needs its v2 workers + FutureMap for it).
+                logger.warning("speculative decoding requires disable_overlap; using normal_loop")
+                self.overlap = False
+            self.spec = create_spec_worker(
+                self.sched_config,
+                self.engine,
+                self.cache_manager,
+                self.table_manager.token_pool,
+                self.eos_token_ids,
+                config.seed,
+            )
 
     # ------------------------------------------------------------------ loop
     @property
@@ -331,7 +354,42 @@ class Scheduler:
             if self.optimistic:
                 self._retract_decode_if_needed()
             batch = self.decode_manager.schedule_next_batch()
+            if batch is not None and self.spec is not None:
+                if (verify := self._prepare_verify(batch)) is not None:
+                    return verify
+                # nobody has a proposal this round: a plain decode step
         return self._prepare_batch(batch) if batch else None
+
+    def _prepare_verify(self, decode_batch: Batch) -> ForwardInput | None:
+        """Turn a decode batch into a speculative verify batch (TARGET_VERIFY):
+        draft, then one extend over ``[last_token, d1..dk]`` of every request."""
+        assert self.spec is not None
+        reqs = decode_batch.reqs
+        info = self.spec.prepare(reqs)
+        if info is None:
+            return None
+        batch = Batch(reqs=reqs, phase="verify", return_all_logits=True)
+        rows, positions = [], []
+        for req in reqs:  # [cached_len, device_len) == [L-1, L+k_i)
+            positions.append(torch.arange(req.cached_len, req.device_len))
+            rows.append(torch.full((req.extend_len,), req.table_idx, dtype=torch.int64))
+        input_mapping = (torch.cat(rows).to(self.device), torch.cat(positions).to(self.device))
+        batch.positions = input_mapping[1]
+        batch.out_loc = self.engine.page_table[input_mapping]
+        self.engine.attn_backend.prepare_metadata(batch)
+        self.stats.decode_steps += 1
+        self.stats.verify_steps += 1
+        self.stats.decode_tokens += batch.num_tokens
+        self.stats.batch_sizes.append(batch.size)
+        empty = torch.empty(0, dtype=torch.int64, device=self.device)
+        return ForwardInput(
+            batch=batch,
+            sample_args=None,
+            input_mapping=input_mapping,
+            output_mapping=(empty, empty),
+            output_rows=empty,
+            spec_info=info,
+        )
 
     # -------------------------------------------------------------- retract
     def _decode_fits(self, reqs: List[Req]) -> bool:
@@ -474,6 +532,9 @@ class Scheduler:
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
         batch = forward_input.batch
         batch.input_ids = self.table_manager.token_pool[forward_input.input_mapping]
+        if forward_input.spec_info is not None:
+            # all logits, no sampling; lengths are fixed up by SpecWorker.commit
+            return self.engine.forward_batch(batch, None)
         output = self.engine.forward_batch(batch, forward_input.sample_args)
         assert output.next_tokens_gpu is not None
         if len(forward_input.output_rows) > 0:
@@ -488,7 +549,43 @@ class Scheduler:
         if ongoing_data is None:
             return
         forward_input, output = ongoing_data
+        if forward_input.spec_info is not None:
+            self._process_verify(forward_input, output)
+            return
         self._process_results(forward_input.batch, output, seq=None)
+
+    def _process_verify(self, forward_input: ForwardInput, output: ForwardOutput) -> None:
+        """Commit a verify batch: each request gets 1..k+1 tokens."""
+        assert self.spec is not None and forward_input.spec_info is not None
+        reqs = forward_input.batch.reqs
+        replies: List[DetokenizeMsg] = []
+        with self.cache_manager.lazy_free_region():
+            committed = self.spec.commit(forward_input.spec_info, reqs, output.logits)
+            for req, tokens in zip(reqs, committed):
+                for token in tokens:
+                    req.append_host(token)
+                # verification stops at EOS / the length limit, so only the
+                # last committed token can finish the request
+                finished, reason = len(req.input_ids) >= req.max_device_len, "length"
+                if not req.sampling_params.ignore_eos and tokens[-1] in self.eos_token_ids:
+                    finished, reason = True, "stop"
+                for j, token in enumerate(tokens):
+                    last = j == len(tokens) - 1
+                    replies.append(
+                        DetokenizeMsg(
+                            uid=req.uid,
+                            next_token=token,
+                            finished=finished and last,
+                            finish_reason=reason if finished and last else None,
+                            num_prompt_tokens=self.prompt_lens[req.uid],
+                        )
+                    )
+                if finished:
+                    self.prompt_lens.pop(req.uid, None)
+                    self.decode_manager.remove_req(req)
+                    self._free_req_resources(req)
+                    self.stats.finished_reqs += 1
+        self.io.send_result(replies)
 
     def _process_results(self, batch: Batch, output: ForwardOutput, seq: int | None) -> None:
         """Commit sampled tokens, finish requests, send replies.
@@ -579,4 +676,6 @@ class Scheduler:
         if self._cpu_thread is not None:
             self._cpu_thread.shutdown(wait=True)
         self.io.close()
+        if self.spec is not None:
+            self.spec.drafter.shutdown()
         self.engine.shutdown()

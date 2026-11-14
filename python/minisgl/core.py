@@ -96,7 +96,10 @@ class ChunkedReq(Req):
         return False
 
 
-Phase = Literal["prefill", "decode"]
+# "verify": speculative verification (SGLang ``ForwardMode.TARGET_VERIFY``). It
+# is an extend batch - each request runs ``[last_token, d1..dk]`` on top of its
+# cached prefix - that needs logits for every position (``return_all_logits``).
+Phase = Literal["prefill", "decode", "verify"]
 
 
 @dataclass(eq=False)
@@ -119,6 +122,10 @@ class Batch:
     @property
     def is_decode(self) -> bool:
         return self.phase == "decode"
+
+    @property
+    def is_verify(self) -> bool:
+        return self.phase == "verify"
 
     @property
     def size(self) -> int:

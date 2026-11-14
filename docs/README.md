@@ -12,6 +12,7 @@ playbook** → **self-check**.
 | | |
 |---|---|
 | [study-guide/](study-guide/README.md) | Part 0, I, II notes, labs and worked answers (prerequisite for everything below) |
+| [speculative-in-scheduler.md](speculative-in-scheduler.md) | Ch10 speculation for a whole batch inside the scheduler: verify batches, KV invariants, draft KV sharing, mapping to SGLang's ngram / standalone / EAGLE workers |
 | [sglang-source-map.md](sglang-source-map.md) | every mini-sglang module → SGLang file/class, what SGLang adds, reading order |
 | Part III | [Ch1 attention backends](part3/ch01-attention-backends.md) · [Ch2 quantization](part3/ch02-quantization.md) · [Ch3 hierarchical caching](part3/ch03-hierarchical-caching.md) · [Ch4 scaling out](part3/ch04-scaling-out.md) · [Ch5 PD disaggregation](part3/ch05-pd-disaggregation.md) |
 | Part IV | [Ch1 deploying](part4/ch01-deploying-with-cookbook.md) · [Ch2 profiling](part4/ch02-profiling.md) + [trace walkthrough](part4/profiling-walkthrough.md) · [Ch3 PR workflow](part4/ch03-pr-workflow.md) |
