@@ -112,6 +112,8 @@ class Scheduler:
             input_len = len(msg.input_ids)
             max_seq_len = self.engine.max_seq_len
             capacity = self.engine.num_pages * self.page_size - 2 * self.page_size
+            if msg.error is not None:
+                return self._reply_error(msg.uid, msg.error)
             if input_len == 0:
                 return self._reply_error(msg.uid, "empty prompt")
             if input_len >= max_seq_len or input_len >= capacity:

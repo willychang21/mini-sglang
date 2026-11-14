@@ -69,3 +69,20 @@ class Registry(Generic[T]):
 
     def names(self):
         return sorted(self._items)
+
+
+def exit_when_parent_dies(interval: float = 1.0) -> None:
+    """Child processes call this so they never outlive the API server, even when
+    the parent is killed by a signal and cannot clean up."""
+    import threading
+    import time
+
+    parent = os.getppid()
+
+    def watch() -> None:
+        while True:
+            time.sleep(interval)
+            if os.getppid() != parent:
+                os._exit(0)
+
+    threading.Thread(target=watch, daemon=True, name="parent-watchdog").start()

@@ -59,6 +59,7 @@ class UserMsg(BaseBackendMsg):
     uid: int
     input_ids: List[int]
     sampling_params: SamplingParams
+    error: str | None = None  # set by the tokenizer when tokenization failed
 
 
 @dataclass
