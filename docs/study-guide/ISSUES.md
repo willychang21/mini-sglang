@@ -86,15 +86,28 @@ running requests (not yet inserted) are not counted, so it raises mid-run. The
 scheduler never calls it (tests call it after `generate`). The reference calls it
 in its idle loop; a debug flag to do the same here would catch leaks earlier.
 
+## Benchmarks
+
+### 7. Percentile conventions in `benchmarks/` (measurement caveat)
+
+`bench_serving.py` uses `p = xs[min(n-1, int(q*n))]`: with 16 requests,
+`int(0.99*16) = 15`, so the reported P99 TTFT is simply the maximum.
+`bench_batching.py` reports P90 as `xs[int(0.9*n) - 1]`. Different
+nearest-rank variants, neither interpolated; `labs/part1_ch05_metrics.py` uses
+linear interpolation (`np.percentile`'s default). With few requests, report
+P99 as "max" or use more requests. `bench_serving.py` also computes TPOT as
+`(end - ttft) / (max_tokens - 1)`, i.e. it assumes every request produced
+`max_tokens` tokens (true with `ignore_eos`, wrong if output stops early).
+
 ## Tutorial text
 
-### 7. Part II Ch9 code chapter: GPU count vs `--tp-size` (tutorial)
+### 8. Part II Ch9 code chapter: GPU count vs `--tp-size` (tutorial)
 
 The text speaks of serving Qwen3-32B on three RTX 5090 GPUs, while the command
 shown uses `--tp-size 2`. (TP size must also divide the head counts, so 3 would
 not work for most models.)
 
-### 8. Part II Ch9 concept chapter: row/column naming (tutorial)
+### 9. Part II Ch9 concept chapter: row/column naming (tutorial)
 
 It says weights are split "along the output (row) dimension". In the
 `nn.Linear` weight `[out, in]`, splitting the *output* dimension is
@@ -102,10 +115,27 @@ It says weights are split "along the output (row) dimension". In the
 to the math `Y = XA` with `A: [in, out]`. Mixing the two conventions is a common
 source of confusion; see the Ch9 note.
 
-### 9. Part II Ch7: block table granularity (tutorial vs. mini-sglang)
+### 10. Part II Ch7: block table granularity (tutorial vs. mini-sglang)
 
 Ch7 describes a block table with one entry per *logical block* (plus a CPU copy)
 and blockwise online-softmax attention. mini-sglang (reference and this repo)
 stores one *token slot* per position in a device-only `page_table`; this repo's
 attention gathers K/V through it and runs one padded SDPA call. Equivalent
 results, different data structure; see the Ch7 note.
+
+### 11. Part I Ch2/Ch3: is prefill compute-bound? (tutorial)
+
+Ch3's summary calls prefill compute-intensive, but Ch2's own LLaMA-7B example
+(N=100 prompt tokens, arithmetic intensity ≈ N = 100 < A100-40GB ridge ≈ 195) is
+memory-bound. Under Ch2's byte model prefill AI ≈ N, so prefill becomes
+compute-bound only above ~195 tokens on that GPU. Ch2 also omits the KV writes
+from the prefill byte count and uses an 8/3·d FFN width (10923) instead of
+LLaMA-7B's 11008. `python labs/part1_ch02_roofline.py` reproduces the numbers.
+
+### 12. Part I Ch4: units and missing config (tutorial)
+
+"MB"/"GB" figures are binary units (14,745,600 B is reported as 14.06 "MB",
+which is MiB). Exercise 3 needs the Qwen2.5-1.5B config, which the chapter does
+not give (from HuggingFace: 28 layers, 2 KV heads, head_dim 128, bf16 →
+28,672 B/token; 5,734,400 B after a 200-token prefill; 8,601,600 B after 100
+generated tokens). `python labs/part1_ch04_kv_memory.py`.
