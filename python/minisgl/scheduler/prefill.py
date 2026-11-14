@@ -1,0 +1,186 @@
+"""Admission of waiting requests into prefill batches (Chapters 6, 7, 8).
+
+``PrefillAdder`` walks the waiting queue in arrival order (FCFS) and stops at
+the first request that does not fit. It enforces three separate limits:
+
+=====================  ======================================================
+request slots          ``table_manager.available_size``
+compute budget         ``token_budget`` prefill tokens per step (chunking)
+KV capacity            ``estimated_len + reserved_size <= available_size``
+=====================  ======================================================
+
+``reserved_size`` starts with the tokens running decode requests still need and
+grows with every admitted request, so admission never over-commits the pool and
+a running request can never run out of KV slots mid-generation.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import List, Tuple
+
+import torch
+
+from ..core import Batch, ChunkedReq, Req, SamplingParams
+from ..kvcache import BaseCacheHandle
+from .cache import CacheManager
+from .decode import DecodeManager
+from .table import TableManager
+
+
+@dataclass(eq=False)
+class PendingReq:
+    uid: int
+    input_ids: torch.Tensor  # CPU int64
+    sampling_params: SamplingParams
+    output_len: int
+    chunked_req: ChunkedReq | None = None  # progress of a chunked prefill
+
+    @property
+    def input_len(self) -> int:
+        return len(self.input_ids)
+
+
+@dataclass
+class PrefillStats:
+    num_reqs: int = 0
+    prompt_tokens: int = 0  # tokens of admitted prompts
+    cached_tokens: int = 0  # of which reused from the prefix cache
+
+
+@dataclass
+class PrefillAdder:
+    token_budget: int
+    reserved_size: int
+    cache_manager: CacheManager
+    table_manager: TableManager
+    stats: PrefillStats = field(default_factory=PrefillStats)
+
+    @property
+    def page_size(self) -> int:
+        return self.cache_manager.page_size
+
+    def _try_allocate_one(self, req: PendingReq) -> Tuple[BaseCacheHandle, int] | None:
+        if self.table_manager.available_size == 0:
+            return None
+        handle = self.cache_manager.match_req(req.input_ids).cuda_handle
+        cached_len = handle.cached_len
+        extend_len = req.input_len - cached_len
+        # + page_size: the last partially filled page is allocated whole
+        estimated_len = extend_len + req.output_len + self.page_size
+
+        # First check: does it fit at all?
+        if estimated_len + self.reserved_size > self.cache_manager.available_size:
+            return None
+        # Locking moves the matched prefix from "evictable" to "protected",
+        # shrinking available_size, so check again afterwards.
+        self.cache_manager.lock(handle)
+        if estimated_len + self.reserved_size > self.cache_manager.available_size:
+            self.cache_manager.unlock(handle)
+            return None
+
+        table_idx = self.table_manager.allocate()
+        if cached_len > 0:
+            # token ids for the model, KV slots for attention
+            self.table_manager.token_pool[table_idx, :cached_len] = req.input_ids[:cached_len]
+            self.table_manager.page_table[table_idx, :cached_len] = handle.get_matched_indices()
+        self.stats.num_reqs += 1
+        self.stats.prompt_tokens += req.input_len
+        self.stats.cached_tokens += cached_len
+        return handle, table_idx
+
+    def _add_one_req(
+        self,
+        pending_req: PendingReq,
+        cache_handle: BaseCacheHandle,
+        table_idx: int,
+        cached_len: int,
+    ) -> Req:
+        remain_len = pending_req.input_len - cached_len
+        chunk_size = min(self.token_budget, remain_len)
+        is_chunked = chunk_size < remain_len
+        cls = ChunkedReq if is_chunked else Req
+        self.token_budget -= chunk_size
+        self.reserved_size += remain_len + pending_req.output_len + self.page_size
+
+        # Only token ids are written now; KV pages are allocated in
+        # Scheduler._prepare_batch once the batch is final.
+        _slice = slice(cached_len, cached_len + chunk_size)
+        self.table_manager.token_pool[table_idx, _slice] = pending_req.input_ids[_slice]
+        return cls(
+            input_ids=pending_req.input_ids[: cached_len + chunk_size],
+            table_idx=table_idx,
+            cached_len=cached_len,
+            output_len=pending_req.output_len,
+            uid=pending_req.uid,
+            sampling_params=pending_req.sampling_params,
+            cache_handle=cache_handle,
+        )
+
+    def try_add_one(self, pending_req: PendingReq) -> Req | None:
+        if self.token_budget <= 0:
+            return None
+        if chunked := pending_req.chunked_req:  # continue a chunked prefill
+            return self._add_one_req(
+                pending_req, chunked.cache_handle, chunked.table_idx, chunked.cached_len
+            )
+        if resource := self._try_allocate_one(pending_req):
+            handle, table_idx = resource
+            return self._add_one_req(pending_req, handle, table_idx, handle.cached_len)
+        return None
+
+
+class PrefillManager:
+    def __init__(
+        self,
+        cache_manager: CacheManager,
+        table_manager: TableManager,
+        decode_manager: DecodeManager,
+    ) -> None:
+        self.cache_manager = cache_manager
+        self.table_manager = table_manager
+        self.decode_manager = decode_manager
+        self.pending_list: List[PendingReq] = []
+        self.stats = PrefillStats()
+
+    @property
+    def runnable(self) -> bool:
+        return len(self.pending_list) > 0
+
+    def add_one_req(self, pending_req: PendingReq) -> None:
+        self.pending_list.append(pending_req)
+
+    def schedule_next_batch(self, prefill_budget: int) -> Batch | None:
+        if len(self.pending_list) == 0:
+            return None
+        adder = PrefillAdder(
+            token_budget=prefill_budget,
+            reserved_size=self.decode_manager.inflight_tokens,
+            cache_manager=self.cache_manager,
+            table_manager=self.table_manager,
+            stats=self.stats,
+        )
+        reqs: List[Req] = []
+        chunked_list: List[PendingReq] = []
+        for pending_req in self.pending_list:
+            if req := adder.try_add_one(pending_req):
+                pending_req.chunked_req = None
+                if isinstance(req, ChunkedReq):
+                    pending_req.chunked_req = req
+                    chunked_list.append(pending_req)
+                reqs.append(req)
+            else:
+                break  # FCFS: do not let later requests jump the queue
+        if len(reqs) == 0:
+            return None
+        # unfinished chunked prefills go back to the front so they do not starve
+        self.pending_list = chunked_list + self.pending_list[len(reqs) :]
+        return Batch(reqs=reqs, phase="prefill")
+
+    def abort_req(self, uid: int) -> Tuple[bool, Req | None]:
+        """Returns (found, req holding resources or None)."""
+        for i, pending_req in enumerate(self.pending_list):
+            if pending_req.uid == uid:
+                self.pending_list.pop(i)
+                return True, pending_req.chunked_req
+        return False, None

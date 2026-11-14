@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minisgl"
+version = "0.1.0"
+description = "A from-scratch mini-SGLang built by following the zero-to-sglang tutorial"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.5",
+    "transformers>=4.51",
+    "safetensors",
+    "fastapi",
+    "uvicorn",
+    "pyzmq",
+    "httpx",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: tests that load the real Qwen3-0.6B checkpoint"]
