@@ -37,7 +37,12 @@ def test_half_precision_close_to_fp32(tiny_model, dtype, backend):
     if backend == "triton":
         pytest.importorskip("triton")
     prompt = [3, 17, 99, 4, 250, 8, 77]
-    kw = dict(device="cpu", max_total_tokens=256, max_seq_len=64)
+    # GPU machine: real kernels on CUDA (the Triton interpreter cannot be mixed
+    # with compiled kernels in one process). CPU-only machine: interpreter.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if dtype == "bfloat16" and device == "cuda" and not torch.cuda.is_bf16_supported():
+        pytest.skip("GPU without bfloat16 support")
+    kw = dict(device=device, max_total_tokens=256, max_seq_len=64)
     ref = SequenceRunner(Engine(EngineConfig(tiny_model, **kw))).extend(prompt)
     engine = Engine(EngineConfig(tiny_model, dtype=dtype, attention_backend=backend, **kw))
     assert engine.kv_cache.dtype == getattr(torch, dtype)
