@@ -260,7 +260,32 @@ rest of `docs/`; the v2 spec workers move quickly).
 `ignore_eos`, k = 4; "accept len" = tokens committed per request per verify
 step; every speculative row produced exactly the target-only tokens):
 
-RESULTS_TABLE
+| workload | batch | config | tok/s | TPOT ms | accept len | acceptance | verify steps | lossless |
+|---|---:|---|---:|---:|---:|---:|---:|:---:|
+| copy-heavy | 1 | none | 12.8 | 76 | 1.00 | - | - | True |
+| copy-heavy | 1 | ngram k=4 | 22.1 | 43 | 3.47 | 63% | 15 | True |
+| copy-heavy | 1 | draft 8L k=4 | 4.0 | 253 | 1.03 | 1% | 60 | True |
+| copy-heavy | 1 | draft self k=4 | 9.5 | 102 | 4.85 | 100% | 13 | True |
+| copy-heavy | 8 | none | 43.4 | 178 | 1.00 | - | - | True |
+| copy-heavy | 8 | ngram k=4 | 59.7 | 115 | 2.10 | 52% | 32 | True |
+| copy-heavy | 8 | draft 8L k=4 | 13.8 | 573 | 1.03 | 1% | 62 | True |
+| copy-heavy | 8 | draft self k=4 | 35.0 | 222 | 4.85 | 100% | 13 | True |
+| open-ended | 1 | none | 14.0 | 72 | 1.00 | - | - | True |
+| open-ended | 1 | ngram k=4 | 13.4 | 75 | 1.57 | 15% | 30 | True |
+| open-ended | 1 | draft 8L k=4 | 4.6 | 220 | 1.17 | 4% | 53 | True |
+| open-ended | 1 | draft self k=4 | 11.8 | 85 | 4.85 | 100% | 13 | True |
+| open-ended | 8 | none | 46.6 | 169 | 1.00 | - | - | True |
+| open-ended | 8 | ngram k=4 | 37.9 | 193 | 1.13 | 10% | 56 | True |
+| open-ended | 8 | draft 8L k=4 | 14.3 | 555 | 1.05 | 1% | 61 | True |
+| open-ended | 8 | draft self k=4 | 40.6 | 195 | 4.85 | 100% | 13 | True |
+
+Summary: n-gram lookup is the only configuration that pays off on this CPU —
+**1.73× throughput / 43 vs 76 ms TPOT at batch 1 and 1.38× at batch 8 on
+copy-heavy prompts** (acceptance length 3.5 / 2.1), and a **4–19 % loss on
+open-ended prompts** where its 1-token matches are mostly wrong. Self-draft
+accepts every proposal (4.85 tokens per round, the k = 4 maximum minus the
+budget-clipped last round) yet is slower than no speculation, because each
+round costs four extra full-model forwards.
 
 How to read it:
 
