@@ -1,7 +1,7 @@
 # Part III · Ch5 — Prefill-Decode Disaggregation
 
 Course text: `part3/Chapter5_Prefill-Decode-Disaggregation.md`. Lab:
-[`labs/part3/pd_transfer.py`](../../labs/part3/pd_transfer.py). The interference itself shows up
+[`labs/part3_ch05_pd_transfer.py`](../../labs/part3_ch05_pd_transfer.py). The interference itself shows up
 in our own profile and A/B runs.
 
 ## Key ideas

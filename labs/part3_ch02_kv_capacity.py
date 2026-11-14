@@ -6,8 +6,8 @@ the per-token formula against mini-sglang's real ``MHAKVCache`` allocation.
 
     bytes/token = 2 (K,V) * layers * kv_heads * head_dim * bytes_per_elem
 
-    python labs/part3/kv_capacity.py
-    python labs/part3/kv_capacity.py --gpu-gb 80 --mem-fraction 0.9 --req-len 4096
+    python labs/part3_ch02_kv_capacity.py
+    python labs/part3_ch02_kv_capacity.py --gpu-gb 80 --mem-fraction 0.9 --req-len 4096
 """
 
 from __future__ import annotations
@@ -87,6 +87,7 @@ def check_against_minisgl() -> None:
         pool = MHAKVCache(num_kv_heads=m.kv_heads, num_layers=m.layers, head_dim=m.head_dim,
                           num_pages=256, page_size=1, dtype=dtype, device=torch.device("cpu"))
         measured = pool.num_bytes / 256
+        assert measured == kv_bytes_per_token(m, nbytes)
         print(f"mini-sglang MHAKVCache {str(dtype):>20}: {measured:,.0f} B/token, formula "
               f"{kv_bytes_per_token(m, nbytes):,.0f} B/token")
     print()
@@ -105,6 +106,7 @@ def main() -> None:
     m = MODELS["Qwen3-8B"]
     b = args.gpu_gb * args.mem_fraction
     gain = (b - weight_gb(m, "AWQ-INT4", CHAPTER_WEIGHTS)) / (b - weight_gb(m, "BF16", CHAPTER_WEIGHTS)) - 1
+    assert 0.10 < gain < 0.25  # the chapter's "only about 16%"
     print(f"Qwen3-8B BF16 -> INT4 grows KV capacity by only {100 * gain:.0f}% (weights are a small share of memory)")
     print("\nTP note: with 8 KV heads, per-rank KV bytes/token for Qwen3-32B at bf16:")
     for tp in (1, 2, 4, 8, 16):

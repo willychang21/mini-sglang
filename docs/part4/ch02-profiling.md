@@ -8,7 +8,7 @@ Deliverables for this chapter:
   serving a workload, with scheduler phases as named ranges.
 - [`profiling-walkthrough.md`](profiling-walkthrough.md): the actual trace read end to end,
   with 4 findings and 3 proposed optimizations.
-- [`labs/part4/ab_compare.py`](../../labs/part4/ab_compare.py): the profiler-off before/after
+- [`labs/part4_ch01_ab_compare.py`](../../labs/part4_ch01_ab_compare.py): the profiler-off before/after
   harness (fixed conditions, repeats, ranges, correctness check).
 
 ## Key ideas
@@ -76,4 +76,4 @@ of `sched.*` free would gain ≤ 0.8% on CPU (Finding 2). Size the target first.
   an accuracy eval (GSM8K, or something harder and more relevant) on both sides with the
   same settings and repeats. Plus unit tests for the changed function.
 - *Report*: the command lines, the environment, the tables, the trace screenshots, and what
-  remains unverified. `labs/part4/ab_compare.py` implements this protocol for mini-sglang.
+  remains unverified. `labs/part4_ch01_ab_compare.py` implements this protocol for mini-sglang.

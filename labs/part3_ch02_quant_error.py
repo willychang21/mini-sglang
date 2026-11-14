@@ -11,11 +11,13 @@ back to fp32), which isolates *rounding error* from kernel speed:
    generation with mini-sglang, and compare against the fp32 model:
    next-token logit KL divergence and greedy token agreement.
 
-    python labs/part3/quant_error.py --model /tmp/models/Qwen3-0.6B
-    python labs/part3/quant_error.py --model /tmp/models/Qwen3-0.6B --skip-e2e   # ~5 s
+    python labs/part3_ch02_quant_error.py --model /tmp/models/Qwen3-0.6B
+    python labs/part3_ch02_quant_error.py --model /tmp/models/Qwen3-0.6B --skip-e2e   # ~5 s
 """
 
 from __future__ import annotations
+
+from _common import REAL_MODEL  # labs/_common.py (MINISGL_TEST_MODEL or /tmp/models/Qwen3-0.6B)
 
 import argparse
 import time
@@ -216,7 +218,7 @@ def _next_token_logits(llm, ids) -> torch.Tensor:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/tmp/models/Qwen3-0.6B")
+    ap.add_argument("--model", default=REAL_MODEL)
     ap.add_argument("--max-tokens", type=int, default=32)
     ap.add_argument("--skip-e2e", action="store_true")
     args = ap.parse_args()

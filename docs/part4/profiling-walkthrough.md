@@ -153,6 +153,6 @@ trades TTFT for ITL, so it needs both metrics reported.
 
 - CPU timings are not GPU timings. The *structure* (what is compute-bound, what is a copy, what
   is host overhead) transfers; the absolute numbers do not.
-- The profiler adds ~10% overhead, so final comparisons should use `labs/part4/ab_compare.py`
+- The profiler adds ~10% overhead, so final comparisons should use `labs/part4_ch01_ab_compare.py`
   with the profiler off (Ch2 §2.3, step 3).
 - One run, one workload. Before claiming a gain, repeat runs and report the range.

@@ -14,11 +14,13 @@ layer-wise overlap. Defaults are illustrative H100-class numbers, not measuremen
 
 Part C: the chapter's Exercise 3 (150 ms recompute, 30 ms H2D, +200 ms storage).
 
-    python labs/part3/hicache_cost_model.py --model /tmp/models/Qwen3-0.6B
-    python labs/part3/hicache_cost_model.py --skip-measure
+    python labs/part3_ch03_hicache_cost_model.py --model /tmp/models/Qwen3-0.6B
+    python labs/part3_ch03_hicache_cost_model.py --skip-measure
 """
 
 from __future__ import annotations
+
+from _common import REAL_MODEL  # labs/_common.py (MINISGL_TEST_MODEL or /tmp/models/Qwen3-0.6B)
 
 import argparse
 import time
@@ -106,6 +108,7 @@ def analytic(args) -> None:
 def exercise3() -> None:
     recompute, h2d, storage = 150, 30, 200
     print("## C. Chapter 3, Exercise 3\n")
+    assert h2d < recompute < storage + h2d  # L2 helps, L3 alone does not
     print(f"recompute {recompute} ms; L2 hit = {h2d} ms ({'faster' if h2d < recompute else 'slower'}); "
           f"L3 hit = {storage}+{h2d} = {storage + h2d} ms ({'faster' if storage + h2d < recompute else 'slower'})")
     for hidden in (0, 100, 200):
@@ -116,7 +119,7 @@ def exercise3() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/tmp/models/Qwen3-0.6B")
+    ap.add_argument("--model", default=REAL_MODEL)
     ap.add_argument("--skip-measure", action="store_true")
     ap.add_argument("--lengths", type=int, nargs="*", default=[256, 512, 1024, 2048])
     # analytic defaults: Qwen3-8B on an H100-class GPU (illustrative, not measured)

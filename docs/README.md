@@ -5,8 +5,13 @@ Study notes and tools that bridge this repo (Part II of
 [SGLang](https://github.com/sgl-project/sglang). SGLang references are pinned to
 `c5d7c598049655046ccbdb8ae8d95b8e3aa3d2b3`; the course to `ba7901a`.
 
+Learning path: **[Part 0–II study guide](study-guide/README.md)** (build and understand
+mini-sglang) → **source map** (the same modules in SGLang) → **Part III/IV notes** → **contribution
+playbook** → **self-check**.
+
 | | |
 |---|---|
+| [study-guide/](study-guide/README.md) | Part 0, I, II notes, labs and worked answers (prerequisite for everything below) |
 | [sglang-source-map.md](sglang-source-map.md) | every mini-sglang module → SGLang file/class, what SGLang adds, reading order |
 | Part III | [Ch1 attention backends](part3/ch01-attention-backends.md) · [Ch2 quantization](part3/ch02-quantization.md) · [Ch3 hierarchical caching](part3/ch03-hierarchical-caching.md) · [Ch4 scaling out](part3/ch04-scaling-out.md) · [Ch5 PD disaggregation](part3/ch05-pd-disaggregation.md) |
 | Part IV | [Ch1 deploying](part4/ch01-deploying-with-cookbook.md) · [Ch2 profiling](part4/ch02-profiling.md) + [trace walkthrough](part4/profiling-walkthrough.md) · [Ch3 PR workflow](part4/ch03-pr-workflow.md) |

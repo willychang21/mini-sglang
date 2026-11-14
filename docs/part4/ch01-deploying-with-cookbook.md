@@ -26,7 +26,7 @@ Course text: `part4/Chapter1_Deploying-SGLang-with-the-Cookbook.md`.
 | `--model-path` | weights / config | `--model` / `--model-path` |
 | `--tp-size` | tensor parallelism | `--tp-size` (Gloo on CPU, NCCL on GPU) |
 | `--dtype bfloat16` | compute and KV dtype | `--dtype` (default fp32 on CPU, bf16 on CUDA) |
-| `--quantization`, `--kv-cache-dtype` | III Ch2 | — (see `labs/part3/quant_error.py`) |
+| `--quantization`, `--kv-cache-dtype` | III Ch2 | — (see `labs/part3_ch02_quant_error.py`) |
 | `--mem-fraction-static` → `max_total_num_tokens` | KV pool capacity | `--max-total-tokens` (set directly) |
 | `--page-size` | paged KV | `--page-size` |
 | `--chunked-prefill-size` | prefill token budget | `--prefill-budget` |
@@ -84,7 +84,7 @@ mode. A smoke test checks that inference runs, not that it is accurate.)
 Protocol: stop the old server; change **one** flag; same inputs, concurrency, warmup and
 starting cache state; repeat; report mean and range; and also check correctness.
 
-Executed on mini-sglang with [`labs/part4/ab_compare.py`](../../labs/part4/ab_compare.py):
+Executed on mini-sglang with [`labs/part4_ch01_ab_compare.py`](../../labs/part4_ch01_ab_compare.py):
 6 requests sharing a 384-token prefix, 8 output tokens, 3 repeats, fresh engine per
 repeat (empty cache), identical warmup.
 

@@ -227,7 +227,7 @@ something already built in mini-sglang. File paths were verified at `c5d7c59`.
   saves bandwidth (V=151,936 floats per token → 1 int) but adds a latency step and a rank-0
   dependency for grammar, logprobs and penalties.
 - **Plan:**
-  1. Quantify first. With `labs/part3/parallel_comm.py`-style math, all-gather of B × V fp32 logits for
+  1. Quantify first. With `labs/part3_ch04_parallel_comm.py`-style math, all-gather of B × V fp32 logits for
      B=64 is ~39 MB gathered per step. Measure the logits all-gather time in a TP 8 trace on real
      hardware. If it is under ~1% of the step, write that in the issue and stop.
   2. If it is worth it: comment with the numbers and a design (opt-in flag, rank-0 sampling, a token

@@ -1,8 +1,8 @@
 # Part III · Ch4 — Scaling Out: DP Attention, EP, PP
 
 Course text: `part3/Chapter4_Scaling-Out.md`. Lab:
-[`labs/part3/parallel_comm.py`](../../labs/part3/parallel_comm.py), with the TP rows of
-[`labs/part3/kv_capacity.py`](../../labs/part3/kv_capacity.py).
+[`labs/part3_ch04_parallel_comm.py`](../../labs/part3_ch04_parallel_comm.py), with the TP rows of
+[`labs/part3_ch02_kv_capacity.py`](../../labs/part3_ch02_kv_capacity.py).
 
 ## Key ideas
 

@@ -14,7 +14,7 @@ Without a cache, step t recomputes K/V for all t previous tokens through every l
 
 **2.** ★ Compute the KV bytes per token for Qwen3-0.6B (28 layers, 8 KV heads, head_dim 128) in bf16. How many tokens fit in 10 GiB?
 <details><summary>Answer</summary>
-2·28·8·128·2 = 114,688 B = 112 KiB per token. 10 GiB / 112 KiB ≈ 93.6K tokens. `labs/part3/kv_capacity.py` checks this against `MHAKVCache.num_bytes`.
+2·28·8·128·2 = 114,688 B = 112 KiB per token. 10 GiB / 112 KiB ≈ 93.6K tokens. `labs/part3_ch02_kv_capacity.py` checks this against `MHAKVCache.num_bytes`.
 </details>
 
 **3.** Why is prefill usually compute-bound and small-batch decode memory-bound? Give the roofline argument.
@@ -128,7 +128,7 @@ Mechanism: the model's attention math (MHA/GQA/MLA, masks). Kernel: one GPU prog
 
 **24.** ★ What is split-KV, why does decode need it, and how are partial results merged?
 <details><summary>Answer</summary>
-The long KV sequence is cut into segments processed by different CTAs, each producing a partial output and its log-sum-exp. Merged output = Σ softmax-weights(lse_i)·o_i. Decode has one query per request, so (batch × heads) can be far below the SM count; splitting adds parallelism (`merge_state.py`; `labs/part3/attention_tiling.py`).
+The long KV sequence is cut into segments processed by different CTAs, each producing a partial output and its log-sum-exp. Merged output = Σ softmax-weights(lse_i)·o_i. Decode has one query per request, so (batch × heads) can be far below the SM count; splitting adds parallelism (`merge_state.py`; `labs/part3_ch01_attention_tiling.py`).
 </details>
 
 **25.** Does FlashAttention make prefill linear in sequence length?
@@ -198,7 +198,7 @@ On P, at the end of prefill. The prompt's KV for all layers, the first token and
 
 **38.** 16K-token prompt, Qwen3-8B bf16 KV, 20 GiB/s link: transfer time? With 8 concurrent transfers?
 <details><summary>Answer</summary>
-144 KiB × 16384 = 2.25 GiB, so ≈ 112 ms. Sharing the link 8 ways, ≈ 900 ms each (`labs/part3/pd_transfer.py`).
+144 KiB × 16384 = 2.25 GiB, so ≈ 112 ms. Sharing the link 8 ways, ≈ 900 ms each (`labs/part3_ch05_pd_transfer.py`).
 </details>
 
 ## Part IV — Practice

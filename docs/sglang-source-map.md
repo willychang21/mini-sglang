@@ -1,7 +1,8 @@
 # mini-sglang → SGLang source map
 
 Every module in this repo, the SGLang code that does the same job, what SGLang adds,
-and where to read next.
+and where to read next. Prerequisite: the [Part 0–II study guide](study-guide/README.md); next: the
+[Part III/IV notes](README.md).
 
 - **Pinned SGLang commit:** [`c5d7c598049655046ccbdb8ae8d95b8e3aa3d2b3`](https://github.com/sgl-project/sglang/tree/c5d7c598049655046ccbdb8ae8d95b8e3aa3d2b3) (main, 2026-11-13).
 - **Notation:** *srt/x/y.py::Name* means `python/sglang/srt/x/y.py`, class or function `Name`;
@@ -73,7 +74,7 @@ and where to read next.
 |---|---|---|---|
 | `attention/base.py::BaseAttnBackend` (`prepare_metadata`, `forward`) | `srt/layers/attention/base_attn_backend.py::AttentionBackend` (`init_forward_metadata`, `forward`, `forward_extend`, `forward_decode`, CUDA-graph `init_forward_metadata_capture_cuda_graph` / `replay`) | Separate extend/decode entry points; CUDA-graph-safe metadata; `--prefill-attention-backend` / `--decode-attention-backend` | `base_attn_backend.py` |
 | `attention/torch_backend.py::TorchAttnBackend` (gather KV via page table, padded SDPA) | `srt/layers/attention/torch_native_backend.py::TorchNativeAttnBackend` | The closest relative. It also gathers per request through `req_to_token`, loops over sequences and calls SDPA. Use it to diff your understanding | `TorchNativeAttnBackend.forward_decode` |
-| (no real kernels) | `srt/layers/attention/flashinfer_backend.py::FlashInferAttnBackend`, `triton_backend.py::TritonAttnBackend`, `flashattention_backend.py::FlashAttentionBackend`, `flashmla_backend.py::FlashMLABackend`, `trtllm_mha_backend.py` | Paged KV read in place (no gather), plan/run split, split-KV decode with `merge_state` (`srt/layers/attention/merge_state.py::merge_state`). `labs/part3/attention_tiling.py` reproduces the math | `triton_backend.py::TritonAttnBackend.forward_decode` (readable), then `kernels/` |
+| (no real kernels) | `srt/layers/attention/flashinfer_backend.py::FlashInferAttnBackend`, `triton_backend.py::TritonAttnBackend`, `flashattention_backend.py::FlashAttentionBackend`, `flashmla_backend.py::FlashMLABackend`, `trtllm_mha_backend.py` | Paged KV read in place (no gather), plan/run split, split-KV decode with `merge_state` (`srt/layers/attention/merge_state.py::merge_state`). `labs/part3_ch01_attention_tiling.py` reproduces the math | `triton_backend.py::TritonAttnBackend.forward_decode` (readable), then `kernels/` |
 | backend chosen in `Engine.__init__` | `srt/layers/attention/attention_registry.py::register_attention_backend`, `ATTENTION_BACKENDS`; names in `srt/arg_groups/choices.py` | Registry keyed by `--attention-backend` | `attention_registry.py` |
 | per-layer call in `models/utils.py::RopeAttn` | `srt/layers/radix_attention.py::RadixAttention.forward` | The model-side layer that hands q/k/v and `layer_id` to `forward_batch.attn_backend` | `radix_attention.py` |
 

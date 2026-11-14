@@ -12,7 +12,7 @@
 4. The same numbers checked against mini-sglang's TorchAttnBackend math
    (``F.scaled_dot_product_attention`` with a causal mask shifted by cached_len).
 
-    python labs/part3/attention_tiling.py
+    python labs/part3_ch01_attention_tiling.py
 """
 
 from __future__ import annotations
@@ -81,6 +81,7 @@ def main() -> None:
     cached = lk - lq  # chunked prefill: 1792 cached tokens, 256 new ones
     ref = naive(q, k, v, cached)
     out = tiled(q, k, v, cached)
+    assert (out - ref).abs().max() < 1e-5
     print("\n## 2. Tiled + online softmax == naive (prefill chunk with cached prefix)\n")
     print(f"  max |diff| = {(out - ref).abs().max():.2e};  peak score storage: naive {lq * lk} floats,"
           f" tiled {lq * 128} floats ({lk // 128}x less)")
@@ -90,11 +91,14 @@ def main() -> None:
     kd, vd = torch.randn(8192, d), torch.randn(8192, d)
     full = naive(q1, kd, vd, None)
     for s in (1, 4, 16, 64):
-        print(f"  splits={s:>2}: max |diff| vs unsplit = {(split_kv_decode(q1, kd, vd, s) - full).abs().max():.2e}")
+        diff = (split_kv_decode(q1, kd, vd, s) - full).abs().max()
+        assert diff < 1e-5
+        print(f"  splits={s:>2}: max |diff| vs unsplit = {diff:.2e}")
 
     print("\n## 4. Same math as mini-sglang's TorchAttnBackend (SDPA + mask k <= cached_len + t)\n")
     mask = torch.arange(lk)[None, :] <= (cached + torch.arange(lq))[:, None]
     sdpa = F.scaled_dot_product_attention(q[None, None], k[None, None], v[None, None], attn_mask=mask)[0, 0]
+    assert (out - sdpa).abs().max() < 1e-5
     print(f"  max |diff| tiled vs SDPA = {(out - sdpa).abs().max():.2e}")
 
     print("\n## 5. Why decode wants split-KV: work per query\n")

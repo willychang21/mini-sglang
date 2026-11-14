@@ -14,8 +14,8 @@ Collective cost models (ring algorithms, n ranks, message of S bytes):
 It also prints the measured all-reduce count of mini-sglang's own TP (one per
 attention block + one per MLP, i.e. 2 per layer) so the model matches the code.
 
-    python labs/part3/parallel_comm.py
-    python labs/part3/parallel_comm.py --tokens 8192 --link-gbps 400   # prefill chunk over NVLink
+    python labs/part3_ch04_parallel_comm.py
+    python labs/part3_ch04_parallel_comm.py --tokens 8192 --link-gbps 400   # prefill chunk over NVLink
 """
 
 from __future__ import annotations
@@ -88,6 +88,7 @@ def minisgl_allreduce_count() -> None:
 
     src = open(q.__file__).read() + open(q.__file__.replace("qwen3.py", "utils.py")).read()
     rows = src.count("RowParallelLinear(")
+    assert rows == 2, rows
     print(f"mini-sglang Qwen3: RowParallelLinear instantiations per layer = {rows} "
           f"(o_proj + down_proj) -> {rows} all-reduces per layer, see {RowParallelLinear.forward.__qualname__}\n")
 

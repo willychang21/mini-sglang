@@ -8,11 +8,13 @@ and shows how sharing the link between concurrent transfers inflates TTFT. It
 also measures the actual per-request K/V bytes mini-sglang would have to ship,
 straight from its page table / KV pool (so the formula is checked against code).
 
-    python labs/part3/pd_transfer.py
-    python labs/part3/pd_transfer.py --model qwen3-32b --links 25 50 400
+    python labs/part3_ch05_pd_transfer.py
+    python labs/part3_ch05_pd_transfer.py --model qwen3-32b --links 25 50 400
 """
 
 from __future__ import annotations
+
+from _common import REAL_MODEL  # labs/_common.py (MINISGL_TEST_MODEL or /tmp/models/Qwen3-0.6B)
 
 import argparse
 
@@ -43,6 +45,7 @@ def measured_minisgl(model_path: str, n: int) -> None:
     kv = llm.engine.kv_cache
     slots = llm.engine.page_table[0, :n]  # row 0 was the request's row (freed, but slots still recorded)
     nbytes = sum(kv.flat_k_cache(l)[slots].nbytes + kv.flat_v_cache(l)[slots].nbytes for l in range(kv.num_layers))
+    assert nbytes == n * bytes_per_token(MODELS["qwen3-0.6b"], 2)
     print(f"mini-sglang, Qwen3-0.6B bf16, {n}-token prompt: K/V to ship = {nbytes / 2**20:.1f} MiB "
           f"(formula: {n * bytes_per_token(MODELS['qwen3-0.6b'], 2) / 2**20:.1f} MiB)\n")
     llm.shutdown()
@@ -55,7 +58,7 @@ def main() -> None:
     ap.add_argument("--links", type=float, nargs="*", default=[5, 10, 20, 50],
                     help="effective bandwidth, GiB/s (e.g. ~5 TCP, ~20-45 one 400G RDMA NIC, ~400+ NVLink)")
     ap.add_argument("--lengths", type=int, nargs="*", default=[1024, 4096, 16384, 65536, 131072])
-    ap.add_argument("--hf-model", default="/tmp/models/Qwen3-0.6B")
+    ap.add_argument("--hf-model", default=REAL_MODEL)
     ap.add_argument("--skip-measure", action="store_true")
     args = ap.parse_args()
     if not args.skip_measure:

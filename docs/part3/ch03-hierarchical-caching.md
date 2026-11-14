@@ -1,7 +1,7 @@
 # Part III · Ch3 — Hierarchical Caching (HiCache)
 
 Course text: `part3/Chapter3_Hierarchical-Caching.md`. Lab:
-[`labs/part3/hicache_cost_model.py`](../../labs/part3/hicache_cost_model.py).
+[`labs/part3_ch03_hicache_cost_model.py`](../../labs/part3_ch03_hicache_cost_model.py).
 
 ## Key ideas
 

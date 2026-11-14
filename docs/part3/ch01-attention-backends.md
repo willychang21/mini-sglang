@@ -2,7 +2,7 @@
 
 Course text: `course-material/eng/part3/Chapter1_Attention-Backends.md` (zero-to-sglang @ `ba7901a`).
 SGLang references are at `c5d7c59` (see [source map](../sglang-source-map.md)).
-Lab: [`labs/part3/attention_tiling.py`](../../labs/part3/attention_tiling.py).
+Lab: [`labs/part3_ch01_attention_tiling.py`](../../labs/part3_ch01_attention_tiling.py).
 
 ## Key ideas
 
@@ -43,7 +43,7 @@ Real paged kernels read KV in place through the index list. In our profile, that
 `srt/layers/attention/torch_native_backend.py::TorchNativeAttnBackend`, which also loops
 over sequences and calls SDPA.
 
-Lab output (`python labs/part3/attention_tiling.py`):
+Lab output (`python labs/part3_ch01_attention_tiling.py`):
 
 ```
 L= 32768: one head, one layer, 16-bit scores =     2.00 GiB

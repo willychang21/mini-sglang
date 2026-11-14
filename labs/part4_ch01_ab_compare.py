@@ -5,11 +5,13 @@ length, seed, warmup, cache state), repeats each configuration N times, reports
 mean and range, and checks correctness (greedy outputs must be identical). The
 profiler is NOT enabled here: profile to explain, benchmark without it to measure.
 
-    python labs/part4/ab_compare.py --setting cache_type --a naive --b radix
-    python labs/part4/ab_compare.py --setting prefill_budget --a 128 --b 1024 --repeats 3
+    python labs/part4_ch01_ab_compare.py --setting cache_type --a naive --b radix
+    python labs/part4_ch01_ab_compare.py --setting prefill_budget --a 128 --b 1024 --repeats 3
 """
 
 from __future__ import annotations
+
+from _common import REAL_MODEL  # labs/_common.py (MINISGL_TEST_MODEL or /tmp/models/Qwen3-0.6B)
 
 import argparse
 import random
@@ -54,7 +56,7 @@ def fmt(xs, scale=1.0):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/tmp/models/Qwen3-0.6B")
+    ap.add_argument("--model", default=REAL_MODEL)
     ap.add_argument("--setting", default="cache_type")
     ap.add_argument("--a", default="naive")
     ap.add_argument("--b", default="radix")

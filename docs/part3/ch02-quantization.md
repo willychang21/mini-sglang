@@ -1,8 +1,8 @@
 # Part III · Ch2 — Quantization and Low-Precision Inference
 
 Course text: `part3/Chapter2_Quantization-and-Low-Precision-Inference.md`. Labs:
-[`labs/part3/quant_error.py`](../../labs/part3/quant_error.py) and
-[`labs/part3/kv_capacity.py`](../../labs/part3/kv_capacity.py).
+[`labs/part3_ch02_quant_error.py`](../../labs/part3_ch02_quant_error.py) and
+[`labs/part3_ch02_kv_capacity.py`](../../labs/part3_ch02_kv_capacity.py).
 
 ## Key ideas
 
@@ -24,7 +24,7 @@ Course text: `part3/Chapter2_Quantization-and-Low-Precision-Inference.md`. Labs:
 
 mini-sglang has no quantized kernels, but its weights and KV pool are plain tensors, so we
 can **fake-quantize** them (quantize → dequantize to fp32). This isolates rounding error
-from kernel speed. `labs/part3/quant_error.py` does this on the real Qwen3-0.6B weights.
+from kernel speed. `labs/part3_ch02_quant_error.py` does this on the real Qwen3-0.6B weights.
 
 Weight-level relative RMS error (and the share of weights rounded to 0):
 
@@ -64,7 +64,7 @@ Things to notice:
    it. FP8 has 100% top-1 agreement on the next token but only 66% identical continuations.
    This is the chapter's point: you need task evals with repeats, not eyeballing outputs.
 
-KV capacity (`labs/part3/kv_capacity.py`) reproduces Figure 5 and checks the formula
+KV capacity (`labs/part3_ch02_kv_capacity.py`) reproduces Figure 5 and checks the formula
 against the bytes mini-sglang's `MHAKVCache` actually allocates (114,688 B/token for
 Qwen3-0.6B in bf16, matching `2·28·8·128·2`):
 
