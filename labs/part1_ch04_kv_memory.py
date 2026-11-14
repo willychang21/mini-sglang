@@ -151,7 +151,9 @@ def main(argv=None) -> None:
 
     eng = make_engine(path, max_total_tokens=512, page_size=4)
     cfg = eng.model_config
-    slots = eng.num_pages * eng.page_size
+    # +1 page: the engine reserves a dummy page for CUDA-graph padding rows
+    # (Part II Ch4); the scheduler never hands it out.
+    slots = (eng.num_pages + 1) * eng.page_size
     b = kv_bytes_per_token(cfg.num_layers, cfg.num_kv_heads, cfg.head_dim, eng.kv_cache._kv_buffer.element_size())
     rows = [[f"Engine({args.model}), {eng.dtype}", tuple(eng.kv_cache._kv_buffer.shape), b, slots,
              eng.kv_cache.num_bytes, b * slots]]

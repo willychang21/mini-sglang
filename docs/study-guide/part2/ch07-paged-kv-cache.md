@@ -69,8 +69,8 @@ The reference's paging code is `scheduler/cache.py` at 9a91cfa; compared directl
   with online softmax. `TorchAttnBackend` gathers per-token slots into a dense padded tensor and
   calls `scaled_dot_product_attention` once. Paging is real at the allocator level; the blockwise
   online-softmax kernel is not re-implemented (lab section 4 demonstrates it in plain torch).
-* **Pool sizing:** from `max_total_tokens` / `num_pages`, no profiling of free GPU memory, no
-  dummy page.
+* **Pool sizing:** from `max_total_tokens` / `num_pages`, no profiling of free GPU memory. The
+  pool holds one extra dummy page for CUDA-graph padding (see the Ch4 notes), as in the reference.
 * `_allocate` raises `RuntimeError` instead of `assert`; `check_integrity` also asserts that no page
   appears twice in `free_slots`; it is not called by the scheduler loop.
 * **Duplicate-prefix fix** in `cache_req` (README "Differences"; Ch8): the reference frees the
