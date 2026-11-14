@@ -4,12 +4,37 @@ A small but complete LLM inference engine, written from scratch by following
 Part II of the [zero-to-sglang](https://github.com/datawhalechina/zero-to-sglang)
 tutorial ("Build Your Own Mini SGL"). The layout mirrors the official
 [mini-sglang](https://github.com/sgl-project/mini-sglang) `python/minisgl/` tree
-that the tutorial walks through, but every module here is pure PyTorch: it runs on
-**CPU** (and on CUDA when available) with no FlashInfer or custom kernels.
+that the tutorial walks through. The default path is pure PyTorch and runs on **CPU**.
+On CUDA there is an optional Triton paged-attention backend and CUDA Graph decode.
 
 It serves Qwen3 models (tested with `Qwen/Qwen3-0.6B`) and reproduces
-HuggingFace greedy output **token for token** in every configuration (paged KV,
-radix cache, chunked prefill, continuous batching, TP=2, speculative decoding).
+HuggingFace greedy output **token for token** in every configuration tested: paged KV,
+radix cache, chunked prefill, continuous batching, optimistic admission with retraction,
+the overlap loop, TP=2, and batched speculative decoding.
+
+## Learning path: from zero-to-sglang to contributing to SGLang
+
+The repo is also a complete study companion for the course. Start at
+**[docs/README.md](docs/README.md)** and follow the steps in order:
+
+1. **[Study guide, Part 0–II](docs/study-guide/README.md):** notes for every chapter, worked
+   answers to every exercise, and runnable [labs](labs/README.md) that make each mechanism
+   observable (tensor shapes, `cached_len`/`out_loc` traces, radix tree dumps, batching
+   timelines, and more).
+2. **Beyond the Part II baseline:**
+   - [scheduler-advanced.md](docs/scheduler-advanced.md): abort routing, preemption,
+     backpressure, and the overlap loop
+   - [attention-backends.md](docs/attention-backends.md): paged attention, flash-decoding,
+     and CUDA Graph
+   - [speculative-in-scheduler.md](docs/speculative-in-scheduler.md): batched
+     draft/verify/rollback inside continuous batching
+3. **[SGLang source map](docs/sglang-source-map.md):** every module here mapped to the SGLang
+   file and class that does the same job, at a pinned commit.
+4. **Part III/IV:** notes and labs for attention backends, quantization, hierarchical caching,
+   scaling out, PD disaggregation, deployment, and profiling (including a
+   [real trace walkthrough](docs/part4/profiling-walkthrough.md)).
+5. **[Contributing to SGLang](docs/contributing-to-sglang.md):** dev setup, tests, lint, CI,
+   and five real open issues with plans. Then the [self-check quiz](docs/self-check.md).
 
 ## Quick start
 
@@ -141,11 +166,33 @@ The tutorial points out several gaps in the reference code. This version closes 
   slots.
 * **Worker processes** exit when the API server dies, even on `SIGKILL`.
 
-Deliberate simplifications:
+The scheduler also fixes gaps found while writing the study guide
+([docs/study-guide/ISSUES.md](docs/study-guide/ISSUES.md)):
 
-* There is no overlap loop, CUDA graph, or custom kernels.
-* Attention is one padded `scaled_dot_product_attention` call over K/V gathered
-  through the page table.
+* aborts can no longer overtake their request when there are several tokenizers;
+* out-of-vocabulary token ids get an error reply instead of crashing the scheduler;
+* a request that cannot be admitted no longer splits radix tree nodes.
+
+## Features beyond the Part II baseline
+
+| Feature | Flag | Doc |
+|---|---|---|
+| Optimistic admission with retraction (preemption) | `--admission optimistic` | [scheduler-advanced.md](docs/scheduler-advanced.md) |
+| Overlap scheduling (CPU work of step N+1 overlaps step N) | `--enable-overlap` | [scheduler-advanced.md](docs/scheduler-advanced.md) |
+| Per-request reply buffer limits (backpressure) | `--max-buffered-bytes` | [scheduler-advanced.md](docs/scheduler-advanced.md) |
+| Triton paged attention, decode split-KV + extend | `--attention-backend triton` | [attention-backends.md](docs/attention-backends.md) |
+| CUDA Graph decode with a dummy page | on by default on CUDA, `--disable-cuda-graph` | [attention-backends.md](docs/attention-backends.md) |
+| Batched speculative decoding (n-gram or draft model) | `--speculative-algorithm ngram` | [speculative-in-scheduler.md](docs/speculative-in-scheduler.md) |
+
+GPU-only parts (Triton on GPU, CUDA Graph capture, NCCL TP) are written and reviewed, but have
+only been exercised on CPU: the Triton kernels via `TRITON_INTERPRET=1`, the graph padding logic
+by unit tests. [notebooks/gpu_benchmarks.ipynb](notebooks/gpu_benchmarks.ipynb) runs the tests and
+benchmarks on a Colab GPU.
+
+Remaining simplifications:
+
+* The default `torch` attention backend is one padded `scaled_dot_product_attention` call
+  over K/V gathered through the page table.
 * The page table stores `int64` slots.
 * Request broadcast to TP ranks uses `broadcast_object_list` over Gloo instead of
   a Gloo count plus ZMQ PUB/SUB.
