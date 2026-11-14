@@ -203,3 +203,22 @@ The one skip is `test_joint_schema_head.py:186`, *"the batched head uses FlashAt
 - **The guard test asserts `sglang.srt.layers.quantization` is not imported** by `systemone.serving`. A
   future unrelated import could trip it. That is intended (it is the regression being guarded), but a
   reviewer may ask to narrow it to `joint_schema_head` only.
+
+---
+
+## Independent re-verification (orchestrating session, 2026-11-14)
+
+A separate session re-checked the claims above from scratch on a fresh, depth-1 fetch of
+`bd47834` (CPU only, torch 2.15.0+cpu):
+
+| check | result |
+|---|---|
+| `git am 10492-joint-schema-layout.patch` | applies cleanly |
+| moved code is verbatim | every removed line of `joint_schema_head.py` reappears unchanged in `joint_schema_layout.py`, except the rewritten `typing` import |
+| `import sglang.srt.layers.joint_schema_layout` | `torch` not loaded; all five helpers exported |
+| new guard test `test_joint_schema_layout.py` | **base: 2 failed**, **patched: 2 passed** |
+| existing `test_joint_schema_head.py` | base and patched both: 2 passed, 1 skipped, 8 subtests passed (no regression) |
+| `ab_import_time.py -n 5 sglang.srt.entrypoints.systemone.serving` | 4448 ms → 3514 ms (**−934 ms, −21%**); quantization / inductor loaded `[True, True] → [False, False]` |
+
+Still unverified here: SGLang's GPU CI suites, and whether maintainers accept this slice. That
+needs the owner to submit it (see `CHECKLIST.md`).
