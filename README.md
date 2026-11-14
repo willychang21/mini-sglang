@@ -63,7 +63,7 @@ python -m pytest -q
 | 7. Paged KV & memory management | `free_slots` page allocator, `allocate_paged`, `page_size > 1` | `scheduler/cache.py` |
 | 8. RadixAttention & prefix caching | radix tree with split / lock / insert / LRU leaf eviction, `cache_req` | `kvcache/radix_cache.py`, `scheduler/cache.py` |
 | 9. Multi-process & tensor parallelism | one scheduler process per rank, column/row/vocab-parallel layers, shard-then-merge weight loading, KV-head replication, rank-0 broadcast over Gloo | `layers/linear.py`, `layers/embedding.py`, `models/weight.py`, `distributed/`, `server/launch.py` |
-| 10. Speculative decoding | draft → one-pass verification → commit → rewind; greedy and rejection-sampling acceptance; model and n-gram drafters | `speculative/` |
+| 10. Speculative decoding | draft → one-pass verification → commit → rewind; greedy and rejection-sampling acceptance; model and n-gram drafters; batched inside the scheduler / server (`--speculative-algorithm`, [docs](docs/speculative-in-scheduler.md)) | `speculative/` |
 
 ## Benchmarks (Qwen3-0.6B, fp32, 4-core CPU)
 

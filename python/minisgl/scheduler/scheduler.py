@@ -676,4 +676,6 @@ class Scheduler:
         if self._cpu_thread is not None:
             self._cpu_thread.shutdown(wait=True)
         self.io.close()
+        if self.spec is not None:
+            self.spec.drafter.shutdown()
         self.engine.shutdown()

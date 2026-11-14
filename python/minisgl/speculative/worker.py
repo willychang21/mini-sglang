@@ -131,6 +131,9 @@ class BatchDrafter(ABC):
     def on_commit(self, req: Req, seq_len: int, num_proposed: int, num_accepted: int) -> None:
         """Called once per request after verification (rollback hook)."""
 
+    def shutdown(self) -> None:
+        pass
+
 
 class NgramBatchDrafter(BatchDrafter):
     """Prompt lookup per request (SGLang ``NGRAMWorker`` keeps a trie over
@@ -248,6 +251,9 @@ class DraftModelDrafter(BatchDrafter):
             active, phase = nxt, "decode"  # draft decode: feed d_j, predict d_{j+1}
         probs = [torch.stack(q) if q else None for q in qs]
         return proposals, probs
+
+    def shutdown(self) -> None:
+        self.engine.shutdown()
 
     def on_commit(self, req, seq_len, num_proposed, num_accepted) -> None:
         if num_proposed == 0:
