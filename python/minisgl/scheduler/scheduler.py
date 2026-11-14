@@ -86,6 +86,23 @@ def _limit_openmp_to_one_thread() -> None:
         ctypes.CDLL(libs[0]).omp_set_num_threads(1)
 
 
+class _AlreadyAdvanced:
+    """Overlap mode: a request seen by ``Engine.forward_batch`` whose
+    ``complete_one`` was already done at scheduling time. Everything else is
+    delegated read-only to the real request."""
+
+    __slots__ = ("_req",)
+
+    def __init__(self, req: Req) -> None:
+        self._req = req
+
+    def complete_one(self) -> None:
+        pass
+
+    def __getattr__(self, name: str):
+        return getattr(self._req, name)
+
+
 @dataclass
 class SchedulerStats:
     prefill_steps: int = 0
@@ -262,6 +279,11 @@ class Scheduler:
                 return self._reply_error(msg.uid, msg.error)
             if input_len == 0:
                 return self._reply_error(msg.uid, "empty prompt")
+            # Out-of-range ids would raise IndexError in the embedding inside
+            # the scheduler loop and take the whole server down.
+            vocab_size = self.engine.model_config.vocab_size
+            if min(msg.input_ids) < 0 or max(msg.input_ids) >= vocab_size:
+                return self._reply_error(msg.uid, f"token ids must be in [0, {vocab_size})")
             if input_len >= max_seq_len or input_len >= capacity:
                 return self._reply_error(
                     msg.uid, f"prompt has {input_len} tokens, limit is {min(max_seq_len, capacity) - 1}"
@@ -303,7 +325,8 @@ class Scheduler:
 
     def _schedule_next_batch(self) -> ForwardInput | None:
         # Prefill has priority; fall back to decode when no prefill batch fits.
-        batch = self.prefill_manager.schedule_next_batch(self.prefill_budget, self.new_token_ratio.current)
+        self.prefill_manager.new_token_ratio = self.new_token_ratio.current
+        batch = self.prefill_manager.schedule_next_batch(self.prefill_budget)
         if batch is None and self.decode_manager.runnable:
             if self.optimistic:
                 self._retract_decode_if_needed()
@@ -415,7 +438,8 @@ class Scheduler:
         forward. Here that must happen at scheduling time, on the CPU thread:
         the next ``_schedule_next_batch`` reads those lengths while this
         forward is still running. So the forward later gets a view of the
-        batch without requests (the model only reads prepared tensors).
+        batch whose requests ignore ``complete_one`` (``_AlreadyAdvanced``);
+        ``Engine.forward_batch`` stays the single entry point (CUDA graphs).
         """
         batch = forward_input.batch
         for req in batch.reqs:
@@ -435,7 +459,9 @@ class Scheduler:
         wrote (the role of stream order + SGLang's FutureMap on GPU).
         """
         view = copy.copy(forward_input.batch)
-        view.reqs = []  # already advanced by _mark_launched
+        # Already advanced by _mark_launched. Keep one entry per request so
+        # batch.size (CUDA-graph selection / padding) is unchanged.
+        view.reqs = [_AlreadyAdvanced(r) for r in forward_input.batch.reqs]
         view.input_ids = self.table_manager.token_pool[forward_input.input_mapping]
         output = self.engine.forward_batch(view, forward_input.sample_args)
         assert output.next_tokens_gpu is not None

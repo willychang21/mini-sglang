@@ -33,6 +33,7 @@ class MHAKVCache(BaseKVCachePool):
             dtype=dtype,
         )
         self._num_layers = num_layers
+        self._page_size = page_size
         self._k_buffer = self._kv_buffer[0]
         self._v_buffer = self._kv_buffer[1]
         self._storage_shape = (num_pages * page_size, local_kv_heads, head_dim)
@@ -63,6 +64,10 @@ class MHAKVCache(BaseKVCachePool):
     @property
     def dtype(self) -> torch.dtype:
         return self._kv_buffer.dtype
+
+    @property
+    def page_size(self) -> int:
+        return self._page_size
 
     @property
     def num_layers(self) -> int:

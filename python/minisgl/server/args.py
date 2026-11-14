@@ -8,6 +8,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 
+from ..attention import SUPPORTED_ATTENTION_BACKENDS
 from ..config import EngineConfig
 from ..distributed import DistributedInfo
 from ..scheduler.config import SchedulerConfig
@@ -28,6 +29,9 @@ class ServerArgs:
     max_seq_len: int = 4096
     prefill_budget: int = 2048
     cache_type: str = "radix"
+    attention_backend: str | None = None
+    cuda_graph_max_bs: int | None = None
+    disable_cuda_graph: bool = False
     admission: str = "conservative"
     disable_overlap: bool = True
     max_buffered_bytes: int = 1 << 20
@@ -71,6 +75,9 @@ class ServerArgs:
             max_seq_len=self.max_seq_len,
             prefill_budget=self.prefill_budget,
             cache_type=self.cache_type,
+            attention_backend=self.attention_backend,
+            cuda_graph_max_bs=self.cuda_graph_max_bs,
+            disable_cuda_graph=self.disable_cuda_graph,
             seed=self.seed,
             dist_init_addr=f"tcp://127.0.0.1:{self.dist_port}",
         )
@@ -100,6 +107,14 @@ def parse_args(argv=None) -> ServerArgs:
     p.add_argument("--max-seq-len", type=int, default=4096)
     p.add_argument("--prefill-budget", type=int, default=2048, help="max prefill tokens per step")
     p.add_argument("--cache-type", choices=["radix", "naive"], default="radix")
+    p.add_argument(
+        "--attention-backend",
+        choices=SUPPORTED_ATTENTION_BACKENDS.names(),
+        default=None,
+        help="default: torch on CPU, triton on CUDA",
+    )
+    p.add_argument("--cuda-graph-max-bs", type=int, default=None, help="largest captured decode batch")
+    p.add_argument("--disable-cuda-graph", action="store_true")
     p.add_argument(
         "--admission",
         choices=["conservative", "optimistic"],

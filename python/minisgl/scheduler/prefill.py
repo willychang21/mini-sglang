@@ -70,6 +70,13 @@ class PrefillAdder:
     def _try_allocate_one(self, req: PendingReq) -> Tuple[BaseCacheHandle, int] | None:
         if self.table_manager.available_size == 0:
             return None
+        # Matching is not read-only: the radix walk splits nodes and refreshes
+        # LRU timestamps. Skip it when even a fully cached prompt (only the
+        # last token to compute) could not fit, so a request that waits for
+        # memory step after step does not keep its prefix "recently used".
+        best_case = 1 + self._reserve(req.output_len) + self.page_size
+        if best_case + self.reserved_size > self.cache_manager.available_size:
+            return None
         handle = self.cache_manager.match_req(req.input_ids).cuda_handle
         cached_len = handle.cached_len
         extend_len = req.input_len - cached_len
@@ -148,6 +155,9 @@ class PrefillManager:
         self.table_manager = table_manager
         self.decode_manager = decode_manager
         self.pending_list: List[PendingReq] = []
+        # fraction of output_len reserved at admission; set by the scheduler
+        # (1.0 = conservative, < 1 under optimistic admission)
+        self.new_token_ratio = 1.0
         self.stats = PrefillStats()
 
     @property
@@ -168,12 +178,13 @@ class PrefillManager:
         retracted = sorted(pending_reqs, key=lambda p: p.uid)
         self.pending_list[n_chunked:n_chunked] = retracted
 
-    def schedule_next_batch(self, prefill_budget: int, new_token_ratio: float = 1.0) -> Batch | None:
+    def schedule_next_batch(self, prefill_budget: int) -> Batch | None:
         if len(self.pending_list) == 0:
             return None
+        new_token_ratio = self.new_token_ratio
         adder = PrefillAdder(
             token_budget=prefill_budget,
-            reserved_size=self.decode_manager.inflight_tokens(new_token_ratio),
+            reserved_size=self.decode_manager.estimated_inflight_tokens(new_token_ratio),
             cache_manager=self.cache_manager,
             table_manager=self.table_manager,
             stats=self.stats,

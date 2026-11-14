@@ -17,12 +17,15 @@ class DecodeManager:
     def runnable(self) -> bool:
         return len(self.running_reqs) > 0
 
-    def inflight_tokens(self, new_token_ratio: float = 1.0) -> int:
-        """KV tokens running requests may still allocate.
+    @property
+    def inflight_tokens(self) -> int:
+        """KV tokens running requests may still allocate (an upper bound)."""
+        return self.estimated_inflight_tokens(1.0)
 
-        With ``new_token_ratio == 1`` this is an upper bound (conservative
-        admission); below 1 it is an estimate and decode may need to retract.
-        """
+    def estimated_inflight_tokens(self, new_token_ratio: float) -> int:
+        """Like ``inflight_tokens`` but with each request's remaining output
+        scaled by ``new_token_ratio`` (optimistic admission). Below 1 it is an
+        estimate, and decode may need to retract."""
         return sum(
             r.device_len - r.cached_len + reserved_output_tokens(r, new_token_ratio) + self.page_size
             for r in self.running_reqs

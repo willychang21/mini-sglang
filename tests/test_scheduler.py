@@ -159,3 +159,25 @@ def test_sampling_is_seeded_and_respects_top_k(tiny_model):
     mixed = llm.generate(prompts, [hot, greedy, hot])
     ref = llm.generate([prompts[1]], greedy)[0]
     assert mixed[1].token_ids == ref.token_ids  # greedy rows stay greedy in mixed batches
+
+
+def test_out_of_vocab_ids_are_rejected(tiny_model):
+    """ISSUES.md #2: an id >= vocab_size used to raise IndexError in the loop."""
+    llm = _llm(tiny_model)
+    bad = llm.generate([[1, 600, 2], [-1, 3], [5, 6, 7]], SamplingParams(max_tokens=3, ignore_eos=True))
+    assert [o.finish_reason for o in bad] == ["error", "error", "length"]
+    assert "token ids" in bad[0].error and len(bad[2].token_ids) == 3
+
+
+def test_hopeless_request_does_not_touch_radix_tree(tiny_model):
+    """ISSUES.md #4 (scheduler side): no match_prefix while even a fully cached
+    prompt could not fit, so waiting requests do not split nodes / bump LRU."""
+    llm = _llm(tiny_model, max_total_tokens=120, max_running_req=4)
+    sched = llm.scheduler
+    calls = []
+    orig = sched.cache_manager.match_req
+    sched.cache_manager.match_req = lambda ids: calls.append(len(ids)) or orig(ids)
+    # three requests that each reserve ~100 tokens: only one fits at a time
+    outs = llm.generate([[i] * 4 for i in range(1, 4)], SamplingParams(max_tokens=90, ignore_eos=True))
+    assert all(len(o.token_ids) == 90 for o in outs)
+    assert len(calls) == 3  # one successful match each, no matching while waiting

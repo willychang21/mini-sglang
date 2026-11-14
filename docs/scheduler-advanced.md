@@ -98,7 +98,7 @@ throughput, stays far below what the pool could hold.
 1. **Reserve a fraction.** Admission reserves `ceil(output_len * new_token_ratio)`
    instead of `output_len`. Running requests are counted as
    `max(0, ceil(output_len * ratio) - generated)`
-   (`retract.reserved_output_tokens`, `DecodeManager.inflight_tokens(ratio)`).
+   (`retract.reserved_output_tokens`, `DecodeManager.estimated_inflight_tokens(ratio)`).
    The prompt (`extend_len`) is always reserved in full, so a prefill
    allocation can never fail. Only decode can.
 2. **Adapt the ratio.** `NewTokenRatioTracker` (`scheduler/retract.py`, same
@@ -205,7 +205,7 @@ How to read it:
 | here | SGLang |
 |---|---|
 | `NewTokenRatioTracker` (`scheduler/retract.py`) | `managers/scheduler_components/new_token_ratio_tracker.py: NewTokenRatioTracker` (`decay_step`, `reset`, `estimate_new_token_ratio_after_retract`); env `SGLANG_INIT_NEW_TOKEN_RATIO`, `SGLANG_MIN_NEW_TOKEN_RATIO_FACTOR`, `SGLANG_NEW_TOKEN_RATIO_DECAY_STEPS`, `SGLANG_RETRACT_DECODE_STEPS` (`environ.py`) |
-| `PrefillAdder(new_token_ratio=...)`, `DecodeManager.inflight_tokens(ratio)` | `managers/schedule_policy.py: PrefillAdder.__init__(new_token_ratio)`, `_get_running_request_total_token_offset`, `add_one_req` |
+| `PrefillAdder(new_token_ratio=...)`, `DecodeManager.estimated_inflight_tokens(ratio)` | `managers/schedule_policy.py: PrefillAdder.__init__(new_token_ratio)`, `_get_running_request_total_token_offset`, `add_one_req` |
 | `Scheduler._retract_decode_if_needed` | `managers/scheduler.py: Scheduler.update_running_batch` (`check_decode_mem`, then `retract_decode`, otherwise `decay_step`) |
 | `retraction_order` | `managers/schedule_batch.py: ScheduleBatch._get_decode_retraction_order` (sort by `(len(output_ids), -len(origin_input_ids))`, pop from the end) |
 | `_retract_one` + `release_for_retract` | `ScheduleBatch.retract_decode` → `release_req` (evicts `remaining * SGLANG_RETRACT_DECODE_STEPS` tokens) → `Req.reset_for_retract`; requeued by `Scheduler._add_request_to_queue(req, is_retracted=True)` |
@@ -232,11 +232,14 @@ every decode step with the rest of the batch.
 
 ### Design: bound, then cancel (`FrontendManager`)
 
-1. **Coalesce** (`dispatch` + `_merge`). A reply arriving while one is still
-   undelivered is merged into it: incremental text is concatenated, and the
-   latest status and counters win. `ack_map[uid]` therefore holds **at most one
-   object**, and its cost is the undelivered text, not one Python object per
-   token. A slow streaming client receives bigger chunks; nothing is lost.
+1. **Coalesce** (`dispatch` + `_merge`). Once `coalesce_after` (64) replies are
+   waiting for a uid, each new reply is merged into the last one: incremental
+   text is concatenated, and the latest status and counters win.
+   `ack_map[uid]` therefore holds **at most 64 objects**, and beyond that its
+   cost is the undelivered text, not one Python object per token. A slow
+   streaming client receives bigger chunks and nothing is lost. A client that
+   keeps up still sees one reply per token, which is the behavior the Chapter
+   5 lab checks.
 2. **Size cap** (`--max-buffered-bytes`, default 1 MiB). If undelivered text
    exceeds the cap, the request is cut off.
 3. **Stall timeout** (`--client-stall-timeout`, default 60 s). A reaper task
@@ -257,7 +260,7 @@ Either limit can be disabled with `0`.
 
 ### Invariants
 
-* `len(ack_map[uid]) <= 1` at all times, and undelivered text per uid stays
+* `len(ack_map[uid]) <= coalesce_after` at all times, and undelivered text per uid stays
   `<= max_buffered_bytes` (plus one reply).
 * A request whose **backend** is slow (queued, long prefill) is never cut off.
   The stall clock only matters while replies are waiting
@@ -283,7 +286,8 @@ checks the CLI plumbing end to end.
 * `TokenizerManager._coalesce_streaming_chunks`: with incremental streaming,
   queued chunks are coalesced into one, concatenating `text` / `output_ids`
   with the last chunk's meta info. It logs "Streaming backlog" once 20 or
-  more chunks queue up. Our `_merge` does the same, eagerly.
+  more chunks queue up. Our `_merge` does the same, but at buffering time and
+  only past a backlog threshold, so the buffer itself stays bounded.
 * Cancel on disconnect: `_wait_one_response` checks
   `request.is_disconnected()` and calls `abort_request`. Request timeouts are
   aborts that carry an `abort_message`, answered with HTTP 503
@@ -339,8 +343,10 @@ second team.
    overlap mode the next schedule happens while the forward is still running,
    so `_mark_launched` does `complete_one()` + `DecodeManager.filter_reqs()` on
    the CPU thread right away. The forward receives a shallow copy of the batch
-   with `reqs = []`; the model reads only prepared tensors. This needs no
-   change to `engine/`.
+   whose requests are `_AlreadyAdvanced` proxies: `complete_one()` is a no-op,
+   and everything else is delegated. `batch.size` is unchanged, so CUDA-graph
+   selection and padding still work. `Engine.forward_batch` stays the single
+   entry point, with no change to `engine/`.
 2. **token_pool write ordering.** A decode request's input token is the token
    sampled by the *previous* batch. That token is only in `token_pool` on the
    device side, not yet on the host. `_run_forward` does both the gather of
@@ -439,3 +445,25 @@ stream and `next_tokens.to("cpu", non_blocking=True)` plus an event, which is
 | `finished_reqs` skip in `_process_results` | `managers/scheduler_components/batch_result_processor.py: process_batch_result_decode` (`still_in_batch_rows`: "Left the batch after launch ... continue") |
 | `filter_reqs` at launch (length-finished requests not rescheduled) | `Scheduler._reqs_finishing_inflight` + `enable_skip_finishing_decode` in `update_running_batch` |
 | `_release_row` / `_graveyard` | deferred freeing of request slots and KV in `release_kv_cache` / `free_group_begin`/`free_group_end`; stream ordering via `_apply_war_barrier` in `event_loop_overlap` |
+
+---
+
+## Also fixed: `docs/study-guide/ISSUES.md` #2 and #4 (scheduler side)
+
+* **#2, out-of-vocabulary token ids.** `Scheduler._process_one_msg` now rejects
+  a `UserMsg` with any id outside `[0, vocab_size)` via `_reply_error`, the
+  same path as an over-long prompt. Before, it raised `IndexError` inside the
+  embedding and took the scheduler down (`test_out_of_vocab_ids_are_rejected`).
+* **#4, matching mutates the tree when admission fails.**
+  `PrefillAdder._try_allocate_one` now skips `match_prefix` entirely when even
+  a fully cached prompt (one token left to compute) could not fit. A request
+  waiting for memory therefore no longer splits nodes or refreshes its
+  prefix's LRU time every step: 3 matches instead of 183 in
+  `test_hopeless_request_does_not_touch_radix_tree`. This mitigation is
+  partial. When the best case fits but the real match does not, the walk still
+  mutates the tree. The full fix is a read-only "peek" in
+  `kvcache/radix_cache.py`, which is outside this PR's scope; as the issue
+  notes, a split never changes contents, so correctness is unaffected either way.
+* **#1** is item 1 above. It is fixed at the root, by routing, so the
+  scheduler never sees an abort before its request; the issue's alternative was
+  a scheduler-side tombstone set.

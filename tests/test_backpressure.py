@@ -37,12 +37,12 @@ def test_slow_consumer_replies_are_coalesced():
         for i in range(1000):  # nobody is reading
             await front.dispatch(_reply(uid, "a", n=i + 1))
         await front.dispatch(_reply(uid, "b", finished=True, n=1001))
-        assert len(front.ack_map[uid]) == 1  # one object, not 1001
+        assert len(front.ack_map[uid]) == front.coalesce_after == 64  # bounded, not 1001
         assert front._buffered_bytes[uid] == 1001
         out = [r async for r in front.wait_for_ack(uid)]
-        assert len(out) == 1
-        assert out[0].incremental_output == "a" * 1000 + "b"
-        assert out[0].finished and out[0].num_output_tokens == 1001 and out[0].num_prompt_tokens == 3
+        assert [r.incremental_output for r in out[:63]] == ["a"] * 63  # first replies kept as-is
+        assert "".join(r.incremental_output for r in out) == "a" * 1000 + "b"  # nothing lost
+        assert out[-1].finished and out[-1].num_output_tokens == 1001 and out[-1].num_prompt_tokens == 3
         assert not sent and front.ack_map == {} and front.event_map == {}
 
     asyncio.run(run())

@@ -82,10 +82,12 @@ class FrontendManager:
     the scheduler down for one request (it is batched with everyone else),
     so the policy is "bound, then cancel":
 
-    1. *Coalesce*: a new reply is merged into the undelivered one (text is
-       concatenated, the latest status wins), so ``ack_map[uid]`` holds at most
-       one object and its cost is the undelivered text, not one object per
-       token. A slow streaming client simply gets bigger chunks.
+    1. *Coalesce*: once ``coalesce_after`` replies are waiting, a new reply is
+       merged into the last undelivered one (text is concatenated, the latest
+       status wins), so ``ack_map[uid]`` never holds more than that many
+       objects and its cost is the undelivered text, not one object per
+       token. A slow streaming client simply gets bigger chunks; a client
+       that keeps up still sees one reply per token.
     2. *Size cap*: if undelivered text exceeds ``max_buffered_bytes``.
     3. *Stall timeout*: if replies have been waiting for longer than
        ``stall_timeout`` seconds without the consumer taking them.
@@ -100,12 +102,17 @@ class FrontendManager:
     def __init__(
         self,
         model_name: str,
-        send_addrs: str | List[str],
-        recv_addr: str,
+        send_addrs: str | List[str] | None = None,
+        recv_addr: str = "",
         max_buffered_bytes: int = 1 << 20,
         stall_timeout: float = 60.0,
+        coalesce_after: int = 64,
+        send_addr: str | None = None,  # pre-routing spelling: one tokenizer address
     ) -> None:
         self.model_name = model_name
+        if send_addrs is None:
+            assert send_addr is not None, "send_addrs is required"
+            send_addrs = send_addr
         self.send_addrs = [send_addrs] if isinstance(send_addrs, str) else list(send_addrs)
         assert len(self.send_addrs) > 0
         self.recv_addr = recv_addr
@@ -118,6 +125,7 @@ class FrontendManager:
         # backpressure bookkeeping
         self.max_buffered_bytes = max_buffered_bytes
         self.stall_timeout = stall_timeout
+        self.coalesce_after = max(1, coalesce_after)
         self._buffered_bytes: Dict[int, int] = {}  # undelivered text per uid
         self._last_drain: Dict[int, float] = {}  # when the consumer last took replies
         self._closed: Dict[int, float] = {}  # uid -> time it was cut off
@@ -157,7 +165,8 @@ class FrontendManager:
         self._create_listener_once()
         assert self._send, "call bind() first"
         uid = getattr(msg, "uid")  # TokenizeMsg / AbortMsg are always uid-tagged
-        await self._send[self.route(uid)].put(msg)
+        send = self._send[self.route(uid)] if isinstance(self._send, list) else self._send  # a test double
+        await send.put(msg)
 
     async def listen(self) -> None:
         assert self._recv is not None
@@ -172,7 +181,7 @@ class FrontendManager:
         if uid not in self.ack_map or uid in self._closed:
             return  # e.g. late tokens of a cancelled request
         pending = self.ack_map[uid]
-        if pending:  # the consumer is behind: coalesce instead of queueing
+        if len(pending) >= self.coalesce_after:  # consumer far behind: coalesce
             pending[-1] = _merge(pending[-1], reply)
         else:
             pending.append(reply)

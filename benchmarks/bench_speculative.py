@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import time
 
+from _common import add_engine_args, describe, engine_kwargs
 from minisgl import SamplingParams
 from minisgl.config import EngineConfig
 from minisgl.engine import Engine
@@ -42,10 +43,11 @@ def main() -> None:
     ap.add_argument("--draft-layers", default="14")
     ap.add_argument("--k", type=int, default=4)
     ap.add_argument("--max-tokens", type=int, default=64)
-    ap.add_argument("--device", default="cpu")
+    add_engine_args(ap)
     args = ap.parse_args()
+    print(describe(args))
 
-    cfg = dict(device=args.device, max_total_tokens=2048, max_seq_len=1024)
+    cfg = dict(**engine_kwargs(args), max_total_tokens=2048, max_seq_len=1024)
     target = Engine(EngineConfig(args.model, **cfg))
     vocab = target.model_config.vocab_size
     tok = TokenizeManager(load_tokenizer(args.model))

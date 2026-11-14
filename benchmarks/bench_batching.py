@@ -21,6 +21,7 @@ import random
 import statistics
 import time
 
+from _common import add_engine_args, describe, engine_kwargs
 from minisgl import SamplingParams
 from minisgl.llm import LLM
 from minisgl.tokenizer import TokenizeManager
@@ -67,7 +68,7 @@ def admission(args) -> None:
     for name, prompts, sps, budget, chat in cases:
         ref = None
         for adm in ("conservative", "optimistic"):
-            llm = LLM(args.model, load_tokenizer_=chat, device=args.device, max_total_tokens=budget,
+            llm = LLM(args.model, load_tokenizer_=chat, **engine_kwargs(args), max_total_tokens=budget,
                       max_seq_len=1024, max_running_req=64, admission=adm)
             if chat:
                 tm = TokenizeManager(llm.tokenizer)
@@ -92,10 +93,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--num-requests", type=int, default=16)
-    ap.add_argument("--device", default="cpu")
     ap.add_argument("--sections", default="batching,paged,admission",
                     help="comma-separated subset of: batching, paged, admission")
+    add_engine_args(ap)
     args = ap.parse_args()
+    print(describe(args))
     sections = set(args.sections.split(","))
     if "admission" in sections:
         admission(args)
@@ -118,7 +120,7 @@ def batching(args, prompts, sps) -> None:
     print("|---|---:|---:|---:|---:|---:|---:|")
     results = {}
     for name, max_running in [("one at a time", 1), ("continuous batching", 64)]:
-        llm = LLM(args.model, load_tokenizer_=False, device=args.device, max_total_tokens=16384,
+        llm = LLM(args.model, load_tokenizer_=False, **engine_kwargs(args), max_total_tokens=16384,
                   max_seq_len=1024, max_running_req=max_running, cache_type="naive")
         llm.generate([prompts[0][:8]], SamplingParams(max_tokens=2))  # warm-up
         llm.scheduler.stats.batch_sizes.clear()
@@ -139,7 +141,7 @@ def batching(args, prompts, sps) -> None:
 def paged(args, prompts, sps) -> None:
     print("## Concurrency under a fixed KV budget (paged vs contiguous)\n")
     budget, max_seq_len = 2048, 1024
-    llm = LLM(args.model, load_tokenizer_=False, device=args.device, max_total_tokens=budget,
+    llm = LLM(args.model, load_tokenizer_=False, **engine_kwargs(args), max_total_tokens=budget,
               max_seq_len=max_seq_len, max_running_req=64, cache_type="naive", page_size=16)
     llm.generate(prompts, sps)
     peak = max(llm.scheduler.stats.batch_sizes)

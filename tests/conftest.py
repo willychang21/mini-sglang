@@ -8,6 +8,11 @@ import shutil
 import pytest
 import torch
 
+# No GPU: run Triton kernels through the Triton interpreter. Must be set before
+# any kernel module is imported (triton.jit reads it at decoration time).
+if not torch.cuda.is_available():
+    os.environ.setdefault("TRITON_INTERPRET", "1")
+
 REAL_MODEL = os.environ.get("MINISGL_TEST_MODEL", "/tmp/models/Qwen3-0.6B")
 
 
