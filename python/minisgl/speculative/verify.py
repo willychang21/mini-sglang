@@ -23,17 +23,29 @@ def greedy_commit(
     Every committed token is the target's argmax under the confirmed prefix, so
     the output equals target-only greedy decoding.
     """
+    return greedy_commit_ids(proposals, verification.argmax(dim=-1).tolist(), remaining, eos_ids)
+
+
+def greedy_commit_ids(
+    proposals: List[int],
+    target_ids: List[int],
+    remaining: int,
+    eos_ids: Collection[int] = (),
+) -> List[int]:
+    """``greedy_commit`` on precomputed ``argmax`` ids (``len(proposals) + 1``
+    of them). The batched scheduler path takes one argmax over the whole
+    verify batch and moves it to the host once, instead of once per row."""
     if remaining == 0:
         return []
     output: List[int] = []
     for i, proposed in enumerate(proposals):
-        token = int(verification[i].argmax())
+        token = int(target_ids[i])
         output.append(token)
         if token in eos_ids or len(output) == remaining:
             return output
         if token != proposed:  # first rejection: later rows saw a wrong prefix
             return output
-    output.append(int(verification[len(proposals)].argmax()))  # bonus token
+    output.append(int(target_ids[len(proposals)]))  # bonus token
     return output
 
 
