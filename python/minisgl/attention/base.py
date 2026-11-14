@@ -14,6 +14,11 @@ class BaseAttnMetadata(ABC):
 
 
 class BaseAttnBackend(ABC):
+    # Backends that can run decode inside a CUDA Graph implement
+    # init_capture_graph / capture_metadata / prepare_for_replay
+    # (see triton_backend.py and engine/graph.py).
+    supports_cuda_graph: bool = False
+
     @abstractmethod
     def prepare_metadata(self, batch: Batch) -> None:
         """Build ``batch.attn_metadata`` from the batch's lengths and page table."""
