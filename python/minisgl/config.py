@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 
@@ -91,6 +91,13 @@ class EngineConfig:
     prefill_budget: int = 2048  # max prefill tokens per step (chunked prefill)
     # --- prefix cache (Chapter 8) ---
     cache_type: str = "radix"  # "radix" | "naive"
+    # --- GPU execution (Part III Ch1, Part II Ch4) ---
+    attention_backend: str | None = None  # None: "torch" on CPU, "triton" on CUDA
+    # CUDA Graph for decode: captured batch sizes. None = default buckets up to
+    # ``cuda_graph_max_bs``; [] or max_bs == 0 disables. Ignored on CPU.
+    cuda_graph_bs: List[int] | None = None
+    cuda_graph_max_bs: int | None = None
+    disable_cuda_graph: bool = False
     # --- misc ---
     num_layers: int | None = None  # load only the first N layers (draft models)
     seed: int = 0
@@ -102,6 +109,10 @@ class EngineConfig:
         if self.dtype is None:
             self.dtype = _default_dtype(self.device)
         assert self.page_size >= 1
+        if self.attention_backend is None:
+            from .attention import default_attention_backend
+
+            self.attention_backend = default_attention_backend(self.device)
 
     @property
     def model_config(self) -> ModelConfig:

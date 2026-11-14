@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import torch
 import torch.distributed as dist
 
-from ..attention import TorchAttnBackend
+from ..attention import create_attention_backend
 from ..config import EngineConfig
 from ..core import Batch, Context, set_global_ctx
 from ..distributed import set_tp_info
@@ -70,20 +70,23 @@ class Engine:
         self.page_table = torch.zeros(
             (config.max_running_req + 1, self.max_seq_len), dtype=torch.int64, device=self.device
         )
-        self.attn_backend = TorchAttnBackend(self.kv_cache, self.page_table)
+        self.attn_backend = create_attention_backend(
+            config.attention_backend, self.kv_cache, self.page_table, self.model_config
+        )
         self.ctx = Context(
             page_table=self.page_table, kv_cache=self.kv_cache, attn_backend=self.attn_backend
         )
         set_global_ctx(self.ctx)
         self.sampler = Sampler(self.device, config.seed)
         logger.info(
-            "Engine ready: %s layers=%d tp=%d/%d device=%s dtype=%s kv_tokens=%d (%.1f MiB)",
+            "Engine ready: %s layers=%d tp=%d/%d device=%s dtype=%s attn=%s kv_tokens=%d (%.1f MiB)",
             self.model_config.architecture,
             self.model_config.num_layers,
             self.tp_info.rank,
             self.tp_info.size,
             self.device,
             self.dtype,
+            config.attention_backend,
             num_tokens,
             self.kv_cache.num_bytes / 2**20,
         )
