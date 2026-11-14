@@ -32,6 +32,17 @@ class ForwardOutput:
     next_tokens_cpu: torch.Tensor | None
 
 
+def resolve_device(device: str, tp_rank: int, tp_size: int) -> torch.device:
+    """``"cuda"`` -> ``cuda:<index>``: ``torch.cuda.set_device`` rejects a CUDA
+    device without an index, and with TP each rank owns GPU ``rank``."""
+    dev = torch.device(device)
+    if dev.type != "cuda":
+        return dev
+    if tp_size > 1:
+        return torch.device("cuda", tp_rank)
+    return torch.device("cuda", dev.index if dev.index is not None else torch.cuda.current_device())
+
+
 class Engine:
     def __init__(self, config: EngineConfig) -> None:
         # TP info must be set before any layer is built (layers size their
@@ -39,12 +50,9 @@ class Engine:
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
         self.config = config
         self.tp_info = config.tp_info
-        if config.device.startswith("cuda") and config.tp_info.size > 1:
-            self.device = torch.device(f"cuda:{config.tp_info.rank}")
-        else:
-            self.device = torch.device(config.device)
+        self.device = resolve_device(config.device, config.tp_info.rank, config.tp_info.size)
         if self.device.type == "cuda":
-            torch.cuda.set_device(self.device)
+            torch.cuda.set_device(self.device)  # before NCCL init and any allocation
         self.dtype = config.dtype
         self.tp_cpu_group = self._init_communication(config)
 
@@ -118,11 +126,13 @@ class Engine:
         if config.tp_info.size == 1:
             return None
         backend = "nccl" if self.device.type == "cuda" else "gloo"
+        kwargs = {"device_id": self.device} if backend == "nccl" else {}
         dist.init_process_group(
             backend=backend,
             init_method=config.dist_init_addr,
             rank=config.tp_info.rank,
             world_size=config.tp_info.size,
+            **kwargs,  # NCCL: bind this rank's communicator to its GPU eagerly
         )
         # Control messages (request broadcast) always travel over a CPU group.
         return dist.group.WORLD if backend == "gloo" else dist.new_group(backend="gloo")

@@ -75,6 +75,15 @@ def _default_dtype(device: str) -> torch.dtype:
     return torch.bfloat16 if device.startswith("cuda") else torch.float32
 
 
+_DTYPE_ALIASES = {
+    "bf16": torch.bfloat16,
+    "fp16": torch.float16,
+    "half": torch.float16,
+    "fp32": torch.float32,
+    "float": torch.float32,
+}
+
+
 @dataclass
 class EngineConfig:
     model_path: str
@@ -105,9 +114,10 @@ class EngineConfig:
 
     def __post_init__(self) -> None:
         if isinstance(self.dtype, str):
-            self.dtype = getattr(torch, self.dtype)
+            self.dtype = _DTYPE_ALIASES.get(self.dtype, None) or getattr(torch, self.dtype)
         if self.dtype is None:
             self.dtype = _default_dtype(self.device)
+        assert self.dtype in (torch.float32, torch.bfloat16, torch.float16), self.dtype
         assert self.page_size >= 1
         if self.attention_backend is None:
             from .attention import default_attention_backend
