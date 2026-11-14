@@ -7,7 +7,7 @@ Study notes and tools that bridge this repo (Part II of
 
 Learning path: **[Part 0–II study guide](study-guide/README.md)** (build and understand
 mini-sglang) → **source map** (the same modules in SGLang) → **Part III/IV notes** → **contribution
-playbook** → **self-check**.
+playbook** → **self-check** → **contribution rehearsal**.
 
 | | |
 |---|---|
@@ -18,6 +18,7 @@ playbook** → **self-check**.
 | Part IV | [Ch1 deploying](part4/ch01-deploying-with-cookbook.md) · [Ch2 profiling](part4/ch02-profiling.md) + [trace walkthrough](part4/profiling-walkthrough.md) · [Ch3 PR workflow](part4/ch03-pr-workflow.md) |
 | [contributing-to-sglang.md](contributing-to-sglang.md) | dev setup, tests, lint, CI, review etiquette, five researched open issues with plans |
 | [self-check.md](self-check.md) | 45-question readiness quiz with answers |
+| [contribution-rehearsal/](contribution-rehearsal/README.md) | an end-to-end, unsubmitted SGLang contribution (#10492 import-time slice, pinned to `bd47834`): root cause, patch, PR description, submission checklist |
 | [../labs/](../labs/README.md) | runnable CPU labs used by the chapter notes |
 | [tools/verify_source_map.py](tools/verify_source_map.py) | `python docs/tools/verify_source_map.py <sglang-checkout> docs/*.md docs/part*/*.md` |
 

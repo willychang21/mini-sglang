@@ -1,0 +1,442 @@
+From 44b8c66faea273d2426c3a16d7c1b6b7a6540195 Mon Sep 17 00:00:00 2001
+From: ccchang <willychang17@gmail.com>
+Date: Sat, 14 Nov 2026 04:41:53 +0000
+Subject: [PATCH] [Perf] systemone: Validate decision layouts without importing
+ the joint schema head
+
+The tokenizer manager and the /v1/systemone entrypoints only pack, parse
+and bound decision layouts, which is plain Python. They imported it from
+layers/joint_schema_head.py, whose pooler import reaches the quantization
+registry, linear, MoE and DeepGEMM runners and torch._inductor.
+
+Move QUESTION_TYPES, LayoutQuestion, max_joint_prompt_tokens and
+pack/parse_decision_layout to layers/joint_schema_layout.py (no torch)
+and import them from there. The head imports them back; behavior is
+unchanged. Add a fresh-interpreter test that the layout module does not
+load torch and the systemone frontend does not load the head or the
+quantization registry.
+
+Refs #10492
+---
+ .../srt/entrypoints/systemone/joint_schema.py |   2 +-
+ .../sglang/srt/entrypoints/systemone/kev.py   |   2 +-
+ .../srt/entrypoints/systemone/serving.py      |   2 +-
+ python/sglang/srt/layers/joint_schema_head.py | 103 +----------------
+ .../sglang/srt/layers/joint_schema_layout.py  | 109 ++++++++++++++++++
+ python/sglang/srt/layers/pointer_head.py      |   2 +-
+ python/sglang/srt/managers/io_struct.py       |   2 +-
+ .../sglang/srt/managers/tokenizer_manager.py  |   2 +-
+ .../systemone/test_joint_schema.py            |   2 +-
+ .../unit/layers/test_joint_schema_head.py     |   5 +-
+ .../unit/layers/test_joint_schema_layout.py   |  50 ++++++++
+ 11 files changed, 174 insertions(+), 107 deletions(-)
+ create mode 100644 python/sglang/srt/layers/joint_schema_layout.py
+ create mode 100644 test/registered/unit/layers/test_joint_schema_layout.py
+
+diff --git a/python/sglang/srt/entrypoints/systemone/joint_schema.py b/python/sglang/srt/entrypoints/systemone/joint_schema.py
+index 66d9568fbf..a369dfffa6 100644
+--- a/python/sglang/srt/entrypoints/systemone/joint_schema.py
++++ b/python/sglang/srt/entrypoints/systemone/joint_schema.py
+@@ -18,7 +18,7 @@ from sglang.srt.entrypoints.systemone.protocol import (
+     SystemOneQuestion,
+     SystemOneRequest,
+ )
+-from sglang.srt.layers.joint_schema_head import (
++from sglang.srt.layers.joint_schema_layout import (
+     QUESTION_TYPES,
+     LayoutQuestion,
+     pack_decision_layout,
+diff --git a/python/sglang/srt/entrypoints/systemone/kev.py b/python/sglang/srt/entrypoints/systemone/kev.py
+index 23422a2d34..aeaca90d95 100644
+--- a/python/sglang/srt/entrypoints/systemone/kev.py
++++ b/python/sglang/srt/entrypoints/systemone/kev.py
+@@ -18,7 +18,7 @@ from sglang.srt.entrypoints.systemone.protocol import (
+     SystemOneQuestion,
+     SystemOneRequest,
+ )
+-from sglang.srt.layers.joint_schema_head import (
++from sglang.srt.layers.joint_schema_layout import (
+     QUESTION_TYPES,
+     LayoutQuestion,
+     pack_decision_layout,
+diff --git a/python/sglang/srt/entrypoints/systemone/serving.py b/python/sglang/srt/entrypoints/systemone/serving.py
+index a8834da78a..ebe3fc4b4b 100644
+--- a/python/sglang/srt/entrypoints/systemone/serving.py
++++ b/python/sglang/srt/entrypoints/systemone/serving.py
+@@ -45,7 +45,7 @@ from sglang.srt.entrypoints.systemone.protocol import (
+     SystemOneScoreAnswer,
+     SystemOneUsage,
+ )
+-from sglang.srt.layers.joint_schema_head import max_joint_prompt_tokens
++from sglang.srt.layers.joint_schema_layout import max_joint_prompt_tokens
+ from sglang.srt.managers.io_struct import EmbeddingReqInput
+ from sglang.srt.multimodal.media_io import (
+     CLIENT_MEDIA_EXCEPTIONS,
+diff --git a/python/sglang/srt/layers/joint_schema_head.py b/python/sglang/srt/layers/joint_schema_head.py
+index 0e939bdee1..b18b61a672 100644
+--- a/python/sglang/srt/layers/joint_schema_head.py
++++ b/python/sglang/srt/layers/joint_schema_head.py
+@@ -16,115 +16,24 @@ more than its memory projection.
+ from __future__ import annotations
+ 
+ import math
+-from typing import Callable, List, Optional, Sequence, Tuple
++from typing import Callable, List, Optional, Tuple
+ 
+-import msgspec
+ import torch
+ import torch.nn.functional as F
+ from torch import nn
+ 
++from sglang.srt.layers.joint_schema_layout import (
++    QUESTION_TYPES,
++    LayoutQuestion,
++    parse_decision_layout,
++)
+ from sglang.srt.layers.pooler import EmbeddingPoolerOutput
+ 
+-# Question types in the order of the head's type embedding.
+-QUESTION_TYPES = ("noul", "choice", "score")
+-
+ # Bounds of one head pass, so a large prefill batch is scored in a few passes.
+ _MAX_GROUP_TOKENS = 65536
+ _MAX_GROUP_SLOTS = 1 << 18
+ 
+ 
+-class LayoutQuestion(msgspec.Struct, frozen=True):
+-    question_type: int
+-    question_span: Tuple[int, int]
+-    option_spans: Tuple[Tuple[int, int], ...]
+-
+-
+-def max_joint_prompt_tokens(
+-    *,
+-    context_len: int,
+-    num_reserved_tokens: int,
+-    max_req_input_len: int,
+-    max_prefill_tokens: int,
+-) -> int:
+-    """The longest prompt, images expanded, that the server runs as one prefill.
+-
+-    The tokenizer manager refuses a prompt of context_len - num_reserved_tokens
+-    tokens, the scheduler one of max_req_input_len, and without chunked prefill
+-    activation memory is reserved for max_prefill_tokens.
+-    """
+-    return min(
+-        context_len - num_reserved_tokens - 1,
+-        max_req_input_len - 1,
+-        max_prefill_tokens,
+-    )
+-
+-
+-def pack_decision_layout(
+-    prompt_length: int, questions: Sequence[LayoutQuestion]
+-) -> List[int]:
+-    """Flatten a prompt's questions into the ints a request carries.
+-
+-    The layout is ``[prompt_length, num_questions]`` followed, per question,
+-    by ``type, question_start, question_end, num_options`` and one
+-    ``option_start, option_end`` pair per option. Positions index the prompt
+-    before its image placeholders expand.
+-    """
+-    layout = [prompt_length, len(questions)]
+-    for question in questions:
+-        layout += [
+-            question.question_type,
+-            *question.question_span,
+-            len(question.option_spans),
+-        ]
+-        for start, end in question.option_spans:
+-            layout += [start, end]
+-    return layout
+-
+-
+-def parse_decision_layout(
+-    layout: Sequence[int], num_tokens: int
+-) -> List[LayoutQuestion]:
+-    """The questions of a layout, placed on the sequence the model reads.
+-
+-    Every span follows the prompt's images, so expanding their placeholders
+-    shifts all spans by the number of added tokens. Raises ValueError when the
+-    layout does not describe the sequence.
+-    """
+-    if len(layout) < 2 or any(type(value) is not int for value in layout):
+-        raise ValueError("decision_layout must be a list of ints")
+-    prompt_length, num_questions = layout[0], layout[1]
+-    shift = num_tokens - prompt_length
+-    if prompt_length < 1 or shift < 0 or num_questions < 1:
+-        raise ValueError("decision_layout does not match the prompt length")
+-    questions = []
+-    cursor = 2
+-    for _ in range(num_questions):
+-        if cursor + 4 > len(layout):
+-            raise ValueError("decision_layout is truncated")
+-        question_type, start, end, num_options = layout[cursor : cursor + 4]
+-        cursor += 4
+-        if (
+-            not 0 <= question_type < len(QUESTION_TYPES)
+-            or num_options < 1
+-            or not 0 <= start < end <= prompt_length
+-            or cursor + 2 * num_options > len(layout)
+-        ):
+-            raise ValueError("decision_layout has an invalid question")
+-        spans = []
+-        for _ in range(num_options):
+-            option_start, option_end = layout[cursor : cursor + 2]
+-            cursor += 2
+-            if not 0 <= option_start < option_end <= prompt_length:
+-                raise ValueError("decision_layout has an invalid option span")
+-            spans.append((option_start + shift, option_end + shift))
+-        questions.append(
+-            LayoutQuestion(question_type, (start + shift, end + shift), tuple(spans))
+-        )
+-    if cursor != len(layout):
+-        raise ValueError("decision_layout has trailing values")
+-    return questions
+-
+-
+ class EvidenceRoutingLayer(nn.Module):
+     def __init__(self, width: int, heads: int, feedforward: int) -> None:
+         super().__init__()
+diff --git a/python/sglang/srt/layers/joint_schema_layout.py b/python/sglang/srt/layers/joint_schema_layout.py
+new file mode 100644
+index 0000000000..69ba90b70c
+--- /dev/null
++++ b/python/sglang/srt/layers/joint_schema_layout.py
+@@ -0,0 +1,109 @@
++"""Decision layouts of Clef and Kev checkpoints.
++
++A decision layout is the flat list of ints a request carries to say where each
++question and option span sits in the prompt. Packing, parsing and the prompt
++bound are plain Python, kept apart from the joint schema head so the tokenizer
++manager and the /v1/systemone entrypoints can validate layouts without
++importing torch.nn modules and the model layer stack.
++"""
++
++from __future__ import annotations
++
++from typing import List, Sequence, Tuple
++
++import msgspec
++
++# Question types in the order of the head's type embedding.
++QUESTION_TYPES = ("noul", "choice", "score")
++
++
++class LayoutQuestion(msgspec.Struct, frozen=True):
++    question_type: int
++    question_span: Tuple[int, int]
++    option_spans: Tuple[Tuple[int, int], ...]
++
++
++def max_joint_prompt_tokens(
++    *,
++    context_len: int,
++    num_reserved_tokens: int,
++    max_req_input_len: int,
++    max_prefill_tokens: int,
++) -> int:
++    """The longest prompt, images expanded, that the server runs as one prefill.
++
++    The tokenizer manager refuses a prompt of context_len - num_reserved_tokens
++    tokens, the scheduler one of max_req_input_len, and without chunked prefill
++    activation memory is reserved for max_prefill_tokens.
++    """
++    return min(
++        context_len - num_reserved_tokens - 1,
++        max_req_input_len - 1,
++        max_prefill_tokens,
++    )
++
++
++def pack_decision_layout(
++    prompt_length: int, questions: Sequence[LayoutQuestion]
++) -> List[int]:
++    """Flatten a prompt's questions into the ints a request carries.
++
++    The layout is ``[prompt_length, num_questions]`` followed, per question,
++    by ``type, question_start, question_end, num_options`` and one
++    ``option_start, option_end`` pair per option. Positions index the prompt
++    before its image placeholders expand.
++    """
++    layout = [prompt_length, len(questions)]
++    for question in questions:
++        layout += [
++            question.question_type,
++            *question.question_span,
++            len(question.option_spans),
++        ]
++        for start, end in question.option_spans:
++            layout += [start, end]
++    return layout
++
++
++def parse_decision_layout(
++    layout: Sequence[int], num_tokens: int
++) -> List[LayoutQuestion]:
++    """The questions of a layout, placed on the sequence the model reads.
++
++    Every span follows the prompt's images, so expanding their placeholders
++    shifts all spans by the number of added tokens. Raises ValueError when the
++    layout does not describe the sequence.
++    """
++    if len(layout) < 2 or any(type(value) is not int for value in layout):
++        raise ValueError("decision_layout must be a list of ints")
++    prompt_length, num_questions = layout[0], layout[1]
++    shift = num_tokens - prompt_length
++    if prompt_length < 1 or shift < 0 or num_questions < 1:
++        raise ValueError("decision_layout does not match the prompt length")
++    questions = []
++    cursor = 2
++    for _ in range(num_questions):
++        if cursor + 4 > len(layout):
++            raise ValueError("decision_layout is truncated")
++        question_type, start, end, num_options = layout[cursor : cursor + 4]
++        cursor += 4
++        if (
++            not 0 <= question_type < len(QUESTION_TYPES)
++            or num_options < 1
++            or not 0 <= start < end <= prompt_length
++            or cursor + 2 * num_options > len(layout)
++        ):
++            raise ValueError("decision_layout has an invalid question")
++        spans = []
++        for _ in range(num_options):
++            option_start, option_end = layout[cursor : cursor + 2]
++            cursor += 2
++            if not 0 <= option_start < option_end <= prompt_length:
++                raise ValueError("decision_layout has an invalid option span")
++            spans.append((option_start + shift, option_end + shift))
++        questions.append(
++            LayoutQuestion(question_type, (start + shift, end + shift), tuple(spans))
++        )
++    if cursor != len(layout):
++        raise ValueError("decision_layout has trailing values")
++    return questions
+diff --git a/python/sglang/srt/layers/pointer_head.py b/python/sglang/srt/layers/pointer_head.py
+index 3d76b0cbbb..bffb6a7c5e 100644
+--- a/python/sglang/srt/layers/pointer_head.py
++++ b/python/sglang/srt/layers/pointer_head.py
+@@ -14,7 +14,7 @@ from typing import List
+ import torch
+ from torch import nn
+ 
+-from sglang.srt.layers.joint_schema_head import parse_decision_layout
++from sglang.srt.layers.joint_schema_layout import parse_decision_layout
+ from sglang.srt.layers.pooler import EmbeddingPoolerOutput
+ 
+ 
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index a4d08c287b..66c8205dce 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -1426,7 +1426,7 @@ class EmbeddingReqInput:
+     token_indices_to_pool: Optional[Union[List[List[int]], List[int]]] = None
+ 
+     # Question and option spans that a Clef checkpoint's joint schema head
+-    # scores, as packed by layers.joint_schema_head.pack_decision_layout.
++    # scores, as packed by layers.joint_schema_layout.pack_decision_layout.
+     # Batch-level: List[List[int]] (one per request). After __getitem__: List[int].
+     decision_layout: Optional[Union[List[List[int]], List[int]]] = None
+ 
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index a21a25adc5..59b523d56c 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -81,7 +81,7 @@ from sglang.srt.kv_canary.canary_info.tokenizer_manager_hook import (
+     CanaryInfoTokenizerManagerHook,
+     ReqStateCanaryInfo,
+ )
+-from sglang.srt.layers.joint_schema_head import (
++from sglang.srt.layers.joint_schema_layout import (
+     max_joint_prompt_tokens,
+     parse_decision_layout,
+ )
+diff --git a/test/registered/unit/entrypoints/systemone/test_joint_schema.py b/test/registered/unit/entrypoints/systemone/test_joint_schema.py
+index d98403080a..a9a9508584 100644
+--- a/test/registered/unit/entrypoints/systemone/test_joint_schema.py
++++ b/test/registered/unit/entrypoints/systemone/test_joint_schema.py
+@@ -24,7 +24,7 @@ from sglang.srt.entrypoints.systemone.joint_schema import encode_joint_schema
+ from sglang.srt.entrypoints.systemone.kev import encode_kev
+ from sglang.srt.entrypoints.systemone.protocol import SystemOneRequest
+ from sglang.srt.entrypoints.systemone.serving import SystemOneServing, _read_image
+-from sglang.srt.layers.joint_schema_head import (
++from sglang.srt.layers.joint_schema_layout import (
+     LayoutQuestion,
+     pack_decision_layout,
+     parse_decision_layout,
+diff --git a/test/registered/unit/layers/test_joint_schema_head.py b/test/registered/unit/layers/test_joint_schema_head.py
+index 925cebf273..a9d195ef84 100644
+--- a/test/registered/unit/layers/test_joint_schema_head.py
++++ b/test/registered/unit/layers/test_joint_schema_head.py
+@@ -8,9 +8,8 @@ from types import SimpleNamespace
+ import torch
+ import torch.nn.functional as F
+ 
+-from sglang.srt.layers.joint_schema_head import (
+-    JointSchemaHead,
+-    JointSchemaPooler,
++from sglang.srt.layers.joint_schema_head import JointSchemaHead, JointSchemaPooler
++from sglang.srt.layers.joint_schema_layout import (
+     LayoutQuestion,
+     pack_decision_layout,
+     parse_decision_layout,
+diff --git a/test/registered/unit/layers/test_joint_schema_layout.py b/test/registered/unit/layers/test_joint_schema_layout.py
+new file mode 100644
+index 0000000000..5be36ccbb4
+--- /dev/null
++++ b/test/registered/unit/layers/test_joint_schema_layout.py
+@@ -0,0 +1,50 @@
++"""Decision layouts stay importable without the joint schema head and the model
++layer stack, in fresh interpreters without a warmed module cache."""
++
++import subprocess
++import sys
++import unittest
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=15, suite="base-a-test-cpu")
++
++
++def _run(code: str) -> subprocess.CompletedProcess:
++    return subprocess.run(
++        [sys.executable, "-c", code],
++        capture_output=True,
++        text=True,
++        timeout=180,
++    )
++
++
++class TestJointSchemaLayoutImports(unittest.TestCase):
++    def test_layout_does_not_load_torch(self):
++        result = _run(
++            "import sys\n"
++            "from sglang.srt.layers.joint_schema_layout import (\n"
++            "    LayoutQuestion, pack_decision_layout, parse_decision_layout)\n"
++            "assert 'torch' not in sys.modules, 'joint_schema_layout imported torch'\n"
++            "q = LayoutQuestion(1, (2, 4), ((5, 6), (6, 8)))\n"
++            "layout = pack_decision_layout(10, [q])\n"
++            "assert parse_decision_layout(layout, 10) == [q]\n"
++        )
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++    def test_systemone_serving_does_not_load_model_layers(self):
++        # The /v1/systemone frontend only validates layouts; the head and the
++        # quantization registry it reaches through the pooler belong to the
++        # scheduler process.
++        result = _run(
++            "import sys\n"
++            "import sglang.srt.entrypoints.systemone.serving\n"
++            "for name in ('sglang.srt.layers.joint_schema_head',\n"
++            "             'sglang.srt.layers.quantization'):\n"
++            "    assert name not in sys.modules, name\n"
++        )
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.43.0
+
