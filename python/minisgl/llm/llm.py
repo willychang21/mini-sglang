@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Sequence
 from ..config import EngineConfig
 from ..core import SamplingParams
 from ..message import AbortBackendMsg, UserMsg
-from ..scheduler import OfflineIO, Scheduler
+from ..scheduler import OfflineIO, Scheduler, SchedulerConfig
 from ..tokenizer import DetokenizeManager, TokenizeManager, load_tokenizer
 
 
@@ -34,10 +34,12 @@ class GenerateOutput:
 
 
 class LLM:
-    def __init__(self, model_path: str, load_tokenizer_: bool = True, **engine_kwargs: Any) -> None:
+    def __init__(self, model_path: str, load_tokenizer_: bool = True, **kwargs: Any) -> None:
+        # scheduler knobs (admission=..., disable_overlap=...) vs engine knobs
+        self.sched_config, engine_kwargs = SchedulerConfig.split_kwargs(kwargs)
         self.config = EngineConfig(model_path=model_path, **engine_kwargs)
         self.io = OfflineIO()
-        self.scheduler = Scheduler(self.config, self.io)
+        self.scheduler = Scheduler(self.config, self.io, sched_config=self.sched_config)
         self.tokenizer = load_tokenizer(model_path) if load_tokenizer_ else None
         self._uid = 0
 

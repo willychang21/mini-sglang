@@ -56,6 +56,18 @@ class CacheManager:
         """Tokens that can be handed out right now: free pages + evictable cache."""
         return self.prefix_cache.size_info.evictable_size + len(self.free_slots) * self.page_size
 
+    @property
+    def available_pages(self) -> int:
+        """Whole pages that ``_allocate`` can hand out right now."""
+        return len(self.free_slots) + self.prefix_cache.size_info.evictable_size // self.page_size
+
+    def pages_needed(self, reqs: List[Req]) -> int:
+        """Pages ``allocate_paged(reqs)`` would take (same arithmetic)."""
+        return sum(
+            max(0, div_ceil(r.device_len, self.page_size) - div_ceil(r.cached_len, self.page_size))
+            for r in reqs
+        )
+
     # ----------------------------------------------------------- prefix cache
     def match_req(self, input_ids: torch.Tensor) -> MatchResult:
         input_len = len(input_ids)
@@ -151,6 +163,28 @@ class CacheManager:
                 ]
             req.cache_handle = new_handle
             self.lock(new_handle)
+
+    def release_for_retract(self, req: Req, short_pages: int) -> None:
+        """Release a retracted request's KV.
+
+        The decode step that triggered the retraction is ``short_pages`` pages
+        short. Return that many pages from the *tail* of the request straight
+        to the free list and hand the rest to the prefix cache. If we inserted
+        everything instead, the allocation right after would evict the whole
+        (freshest, often only evictable) radix leaf just to get a few pages and
+        the resumed request would have to recompute all of it.
+
+        Only pages the request owns can be freed: ``[0, cache_handle.cached_len)``
+        belongs to the cache (matched at admission) and stays there.
+        """
+        ps = self.page_size
+        owned_from_page = req.cache_handle.cached_len // ps
+        end_page = div_ceil(req.cached_len, ps)
+        keep_len = max(owned_from_page, end_page - max(short_pages, 0)) * ps
+        if keep_len < req.cached_len:
+            self._free(self.page_table[req.table_idx, keep_len : req.cached_len].clone())
+            req.cached_len = keep_len  # the request object is discarded after this
+        self.cache_req(req, finished=True)
 
     # -------------------------------------------------------------- checking
     def check_integrity(self) -> None:

@@ -40,7 +40,7 @@ def _run_scheduler(args: ServerArgs, rank: int, ack_queue) -> None:
             tp_size=args.tp_size,
             tp_cpu_group=engine.tp_cpu_group,
         )
-        scheduler = Scheduler(config, io, engine)
+        scheduler = Scheduler(config, io, engine, args.scheduler_config())
     except Exception as e:
         logger.exception("scheduler rank %d failed to start", rank)
         ack_queue.put(f"ERROR: scheduler rank {rank}: {e}")

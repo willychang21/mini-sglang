@@ -8,7 +8,7 @@ set between steps, so a finished request's slot is reused immediately.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 
@@ -16,11 +16,13 @@ from ..config import EngineConfig
 from ..core import Batch, ChunkedReq, Req
 from ..engine import BatchSamplingArgs, Engine, ForwardOutput
 from ..message import AbortBackendMsg, BaseBackendMsg, DetokenizeMsg, ExitMsg, UserMsg
-from ..utils import init_logger
+from ..utils import div_ceil, init_logger
 from .cache import CacheManager
+from .config import SchedulerConfig
 from .decode import DecodeManager
 from .io import SchedulerIO
 from .prefill import PendingReq, PrefillManager
+from .retract import NewTokenRatioTracker, retraction_order
 from .table import TableManager
 
 logger = init_logger(__name__)
@@ -43,12 +45,21 @@ class SchedulerStats:
     decode_tokens: int = 0
     finished_reqs: int = 0
     aborted_reqs: int = 0
+    retracted_reqs: int = 0  # retraction events (a request can be retracted twice)
+    retract_steps: int = 0  # decode steps that had to retract
     batch_sizes: List[int] = field(default_factory=list)
 
 
 class Scheduler:
-    def __init__(self, config: EngineConfig, io: SchedulerIO, engine: Engine | None = None) -> None:
+    def __init__(
+        self,
+        config: EngineConfig,
+        io: SchedulerIO,
+        engine: Engine | None = None,
+        sched_config: SchedulerConfig | None = None,
+    ) -> None:
         self.config = config
+        self.sched_config = sched_config or SchedulerConfig()
         self.engine = engine or Engine(config)
         self.io = io
         self.device = self.engine.device
@@ -69,6 +80,10 @@ class Scheduler:
             self.cache_manager, self.table_manager, self.decode_manager
         )
         self.stats = SchedulerStats()
+        self.new_token_ratio = NewTokenRatioTracker.from_config(self.sched_config)
+        # uid -> prompt length, for usage reporting and the retraction policy
+        # (a resumed request's "prompt" also contains what it generated so far)
+        self.prompt_lens: Dict[int, int] = {}
         self._exit = False
 
     # ------------------------------------------------------------------ loop
@@ -123,6 +138,7 @@ class Scheduler:
             output_len = min(msg.sampling_params.max_tokens, max_seq_len - input_len, capacity - input_len)
             if output_len <= 0:
                 return self._reply_error(msg.uid, "max_tokens must be positive")
+            self.prompt_lens[msg.uid] = input_len
             self.prefill_manager.add_one_req(
                 PendingReq(
                     uid=msg.uid,
@@ -139,6 +155,7 @@ class Scheduler:
             if req_to_free is not None:
                 self._free_req_resources(req_to_free)
             if found:
+                self.prompt_lens.pop(msg.uid, None)
                 self.stats.aborted_reqs += 1
                 self.io.send_result(
                     [DetokenizeMsg(uid=msg.uid, next_token=-1, finished=True, finish_reason="abort")]
@@ -149,13 +166,80 @@ class Scheduler:
             raise TypeError(f"unknown message {msg!r}")
 
     # ------------------------------------------------------------- schedule
+    @property
+    def optimistic(self) -> bool:
+        return self.sched_config.admission == "optimistic"
+
     def _schedule_next_batch(self) -> ForwardInput | None:
         # Prefill has priority; fall back to decode when no prefill batch fits.
-        batch = (
-            self.prefill_manager.schedule_next_batch(self.prefill_budget)
-            or self.decode_manager.schedule_next_batch()
-        )
+        batch = self.prefill_manager.schedule_next_batch(self.prefill_budget, self.new_token_ratio.current)
+        if batch is None and self.decode_manager.runnable:
+            if self.optimistic:
+                self._retract_decode_if_needed()
+            batch = self.decode_manager.schedule_next_batch()
         return self._prepare_batch(batch) if batch else None
+
+    # -------------------------------------------------------------- retract
+    def _decode_fits(self, reqs: List[Req]) -> bool:
+        return self.cache_manager.pages_needed(reqs) <= self.cache_manager.available_pages
+
+    def _retract_decode_if_needed(self) -> None:
+        """SGLang ``update_running_batch`` + ``ScheduleBatch.retract_decode``.
+
+        If the next decode step's pages do not fit, retract the least valuable
+        running requests until they do. Unlike SGLang we may retract the last
+        one too: the only things that can still hold memory then are chunked
+        prefills, which were admitted with room for themselves, so retracting
+        everyone always lets them finish and the queue makes progress.
+        """
+        running = list(self.decode_manager.running_reqs)
+        if self._decode_fits(running):
+            self.new_token_ratio.decay_step()
+            return
+        keep = retraction_order(running, self.prompt_lens)
+        victims: List[Req] = []
+        retracted: List[PendingReq] = []
+        # At least one; then until the rest fits. (No lazy_free_region here:
+        # the fit check must see the pages each retraction frees.)
+        while keep and (not retracted or not self._decode_fits(keep)):
+            victims.append(keep.pop())
+            retracted.append(self._retract_one(victims[-1], self._headroom_pages(keep)))
+        old = self.new_token_ratio.current
+        self.new_token_ratio.current = self.new_token_ratio.estimate_after_retract(keep or victims)
+        self.prefill_manager.add_retracted(retracted)
+        self.stats.retract_steps += 1
+        self.stats.retracted_reqs += len(retracted)
+        logger.info(
+            "KV cache full: retracted %d request(s), %d left running, new_token_ratio %.3f -> %.3f",
+            len(retracted), len(keep), old, self.new_token_ratio.current,
+        )
+
+    def _headroom_pages(self, survivors: List[Req]) -> int:
+        """Pages the survivors still lack for their next ``retract_decode_steps``
+        decode steps (SGLang's ``release_req`` evicts the same headroom). Freeing
+        this much right away keeps the next steps from evicting the rest of the
+        retracted request's KV out of the radix cache."""
+        steps = max(1, self.sched_config.retract_decode_steps)
+        want = div_ceil(len(survivors) * steps, self.page_size) + self.cache_manager.pages_needed(survivors)
+        return want - self.cache_manager.available_pages
+
+    def _retract_one(self, req: Req, short_pages: int) -> PendingReq:
+        """Free a decoding request but keep everything needed to resume it."""
+        self.decode_manager.remove_req(req)
+        pending = PendingReq(
+            uid=req.uid,
+            input_ids=req.input_ids,  # prompt + every token generated so far
+            sampling_params=req.sampling_params,
+            output_len=req.remain_len,  # same max_device_len as before
+            retracted=True,
+        )
+        # Frees the table row, returns ``short_pages`` tail pages to the free
+        # list and hands the rest of [0, cached_len) to the radix cache
+        # (unlocked -> evictable). Re-admission matches it back for free unless
+        # memory pressure evicts it first.
+        self.table_manager.free(req.table_idx)
+        self.cache_manager.release_for_retract(req, short_pages)
+        return pending
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.cache_manager.allocate_paged(batch.reqs)
@@ -226,10 +310,11 @@ class Scheduler:
                         next_token=token,
                         finished=finished,
                         finish_reason=reason if finished else None,
-                        num_prompt_tokens=req.max_device_len - req.output_len,
+                        num_prompt_tokens=self.prompt_lens[req.uid],
                     )
                 )
                 if finished:
+                    self.prompt_lens.pop(req.uid, None)
                     self.decode_manager.remove_req(req)
                     self._free_req_resources(req)
                     self.stats.finished_reqs += 1

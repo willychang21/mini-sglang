@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from ..config import EngineConfig
 from ..distributed import DistributedInfo
+from ..scheduler.config import SchedulerConfig
 
 
 @dataclass
@@ -27,6 +28,7 @@ class ServerArgs:
     max_seq_len: int = 4096
     prefill_budget: int = 2048
     cache_type: str = "radix"
+    admission: str = "conservative"
     seed: int = 0
     dist_port: int = 29517
     ipc_dir: str = field(default_factory=lambda: tempfile.gettempdir())
@@ -76,6 +78,10 @@ class ServerArgs:
         return EngineConfig(**kwargs)
 
 
+    def scheduler_config(self) -> SchedulerConfig:
+        return SchedulerConfig(admission=self.admission)  # type: ignore[arg-type]
+
+
 def parse_args(argv=None) -> ServerArgs:
     p = argparse.ArgumentParser(prog="python -m minisgl", description="mini-sglang server")
     p.add_argument("--model", "--model-path", dest="model_path", required=True)
@@ -91,6 +97,13 @@ def parse_args(argv=None) -> ServerArgs:
     p.add_argument("--max-seq-len", type=int, default=4096)
     p.add_argument("--prefill-budget", type=int, default=2048, help="max prefill tokens per step")
     p.add_argument("--cache-type", choices=["radix", "naive"], default="radix")
+    p.add_argument(
+        "--admission",
+        choices=["conservative", "optimistic"],
+        default="conservative",
+        help="conservative: reserve each request's full max_tokens of KV (never preempts); "
+        "optimistic: reserve max_tokens * new_token_ratio and retract decode requests on KV exhaustion",
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dist-port", type=int, default=29517)
     args = p.parse_args(argv)
