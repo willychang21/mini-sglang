@@ -64,20 +64,34 @@ class OpenAICompletionRequest(BaseModel):
 
 # ---------------------------------------------------------- frontend state
 class FrontendManager:
-    def __init__(self, model_name: str, send_addr: str, recv_addr: str) -> None:
+    """Per-uid state of the API server.
+
+    Routing to tokenizers (multi-tokenizer abort race): with one PUSH socket
+    shared by N tokenizers, ZMQ round-robins *messages*, so a request's
+    ``TokenizeMsg`` and its later ``AbortMsg`` may go to different tokenizers.
+    The abort then overtakes the (slower) tokenization and reaches the scheduler
+    first, where it is ignored, and the request runs to completion. Instead we
+    keep one PUSH socket per tokenizer and send every message of ``uid`` to
+    tokenizer ``uid % N``. A tokenizer handles its inbox in order and ZMQ keeps
+    per-socket FIFO order, so per-uid order is preserved end to end
+    (frontend -> tokenizer[uid % N] -> scheduler).
+    """
+
+    def __init__(self, model_name: str, send_addrs: str | List[str], recv_addr: str) -> None:
         self.model_name = model_name
-        self.send_addr = send_addr
+        self.send_addrs = [send_addrs] if isinstance(send_addrs, str) else list(send_addrs)
+        assert len(self.send_addrs) > 0
         self.recv_addr = recv_addr
         self.uid_counter = 0
         self.ack_map: Dict[int, List[UserReply]] = {}
         self.event_map: Dict[int, asyncio.Event] = {}
-        self._send: ZmqAsyncPushQueue | None = None
+        self._send: List[ZmqAsyncPushQueue] = []
         self._recv: ZmqAsyncPullQueue | None = None
         self._listener: asyncio.Task | None = None
 
     def bind(self) -> None:
         """Create sockets before the backend starts so workers can connect."""
-        self._send = ZmqAsyncPushQueue(self.send_addr, bind=True)
+        self._send = [ZmqAsyncPushQueue(addr, bind=True) for addr in self.send_addrs]
         self._recv = ZmqAsyncPullQueue(self.recv_addr, bind=True)
 
     def new_user(self) -> int:
@@ -91,10 +105,15 @@ class FrontendManager:
         if self._listener is None or self._listener.done():
             self._listener = asyncio.get_running_loop().create_task(self.listen())
 
+    def route(self, uid: int) -> int:
+        """Index of the tokenizer that owns every message of ``uid``."""
+        return uid % len(self.send_addrs)
+
     async def send_one(self, msg: BaseMsg) -> None:
         self._create_listener_once()
-        assert self._send is not None
-        await self._send.put(msg)
+        assert self._send, "call bind() first"
+        uid = getattr(msg, "uid")  # TokenizeMsg / AbortMsg are always uid-tagged
+        await self._send[self.route(uid)].put(msg)
 
     async def listen(self) -> None:
         assert self._recv is not None

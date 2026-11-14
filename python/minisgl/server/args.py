@@ -36,9 +36,13 @@ class ServerArgs:
         return f"ipc://{os.path.join(self.ipc_dir, f'minisgl-{self.run_id}-{name}')}"
 
     # ZMQ endpoints: frontend -> tokenizers -> scheduler -> detokenizer -> frontend
+    def tokenizer_addr(self, i: int) -> str:
+        """One endpoint per tokenizer worker: the frontend routes uid -> uid % N."""
+        return self._ipc(f"tokenizer-{i}")
+
     @property
-    def tokenizer_addr(self) -> str:
-        return self._ipc("tokenizer")
+    def tokenizer_addrs(self) -> list:
+        return [self.tokenizer_addr(i) for i in range(self.num_tokenizers)]
 
     @property
     def scheduler_addr(self) -> str:

@@ -80,7 +80,7 @@ def start_backend(args: ServerArgs) -> list:
         procs.append(
             ctx.Process(
                 target=tokenize_worker,
-                args=(args.model_path, args.tokenizer_addr, args.scheduler_addr, ack_queue, f"tokenizer-{i}"),
+                args=(args.model_path, args.tokenizer_addr(i), args.scheduler_addr, ack_queue, f"tokenizer-{i}"),
                 daemon=True,
                 name=f"minisgl-tokenizer-{i}",
             )
@@ -106,7 +106,7 @@ def launch_server(argv=None) -> None:
     args = parse_args(argv)
     state = FrontendManager(
         model_name=os.path.basename(os.path.normpath(args.model_path)),
-        send_addr=args.tokenizer_addr,
+        send_addrs=args.tokenizer_addrs,
         recv_addr=args.frontend_addr,
     )
     state.bind()
