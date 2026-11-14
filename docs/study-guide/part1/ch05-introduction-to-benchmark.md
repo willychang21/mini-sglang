@@ -62,8 +62,9 @@ TPOT 63 → 207 ms, throughput 14.7 → 65.9 tok/s.
 
 **Misconception:** TPOT and ITL are two names for the same number.
 **Actually:** TPOT is one average per request. ITL is one value per gap. A request can
-have a fine TPOT and still stall visibly. In the lab, request 4 has TPOT 2.13 ms but
-a max ITL of 5.85 ms, because another request's prefill ran in between.
+have a fine TPOT and still stall visibly. In the lab run shown below, request 12 has
+TPOT 2.44 ms but a max ITL of 5.85 ms, because another request's prefill ran in
+between.
 
 **Misconception:** TTFT is the prefill time.
 **Actually:** It is queueing + prefill (+ tokenization and network for HTTP). In the

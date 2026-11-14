@@ -176,7 +176,8 @@ def main(argv=None) -> None:
     print(f"\nTTFT: P50 {p50 * 1e3:.1f} ms, mean {mean * 1e3:.1f} ms, P99 {p99 * 1e3:.1f} ms "
           f"(P99/P50 = {p99 / p50:.1f}x). The mean is pulled up by {n - args.slots} queued requests,")
     print("yet it is far below what those requests experienced: report percentiles, not the mean.")
-    assert p50 < mean < p99 and p99 > 3 * p50
+    assert p50 < mean < p99 and p99 > 2 * p50  # timing (typ. 4-8x); loose for busy machines
+    assert percentile(ttft_steps, 50) == 0 and percentile(ttft_steps, 99) >= min_out  # same claim in steps
     assert summarize(mb, ttft_slo)["n_good"] < n
 
     # ------------------------------------------------------------------ 4

@@ -63,18 +63,49 @@ but a request that is retried every step keeps its prefix "recently used". Lab:
 `python labs/part2_ch08_radix_tree.py` section 7 shows a re-match splitting a
 node.
 
+### 5. KV reservation is 2 tokens per request more conservative than the reference (mismatch, not a bug)
+
+This repo reserves `max_device_len - cached_len + page_size` per running request
+(`scheduler/decode.py:DecodeManager.inflight_tokens`) and adds `+ page_size` to
+both `estimated_len` and the `reserved_size` increment
+(`scheduler/prefill.py:PrefillAdder._try_allocate_one` / `_add_one_req`). The
+reference at 9a91cfa reserves `remain_len + (page_size - 1)` per running request.
+Between decode steps `device_len = cached_len + 1`, so this repo reserves
+`remain_len + 1 + page_size`, i.e. two tokens more per request. It is safe (it
+over-reserves), but numbers in Ch6 exercise 5 differ by the extra page:
+
+```bash
+python labs/part2_ch06_batching_timeline.py   # section 7: 1301 <= 1300 rejected
+                                              # where the chapter's 600+200+500 = 1300 <= 1300 admits
+```
+
+### 6. `CacheManager.check_integrity` is only meaningful when idle (gap)
+
+It counts `free pages + pages in the prefix cache == num_pages`; pages held by
+running requests (not yet inserted) are not counted, so it raises mid-run. The
+scheduler never calls it (tests call it after `generate`). The reference calls it
+in its idle loop; a debug flag to do the same here would catch leaks earlier.
+
 ## Tutorial text
 
-### 5. Part II Ch9 code chapter: GPU count vs `--tp-size` (tutorial)
+### 7. Part II Ch9 code chapter: GPU count vs `--tp-size` (tutorial)
 
 The text speaks of serving Qwen3-32B on three RTX 5090 GPUs, while the command
 shown uses `--tp-size 2`. (TP size must also divide the head counts, so 3 would
 not work for most models.)
 
-### 6. Part II Ch9 concept chapter: row/column naming (tutorial)
+### 8. Part II Ch9 concept chapter: row/column naming (tutorial)
 
 It says weights are split "along the output (row) dimension". In the
 `nn.Linear` weight `[out, in]`, splitting the *output* dimension is
 **column parallel** (`layers/linear.py:ColumnParallelLinear`); the naming refers
 to the math `Y = XA` with `A: [in, out]`. Mixing the two conventions is a common
 source of confusion; see the Ch9 note.
+
+### 9. Part II Ch7: block table granularity (tutorial vs. mini-sglang)
+
+Ch7 describes a block table with one entry per *logical block* (plus a CPU copy)
+and blockwise online-softmax attention. mini-sglang (reference and this repo)
+stores one *token slot* per position in a device-only `page_table`; this repo's
+attention gathers K/V through it and runs one padded SDPA call. Equivalent
+results, different data structure; see the Ch7 note.

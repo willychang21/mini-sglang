@@ -6,7 +6,7 @@
 
 | Limitation (Ch3 version) | Mechanism | Metric | Validated here by |
 |---|---|---|---|
-| Every decode step re-runs the whole sequence (`llm/naive.py`), so per-token cost grows with length | KV cache: `MHAKVCache` pool + `page_table` + per-step `out_loc`, store-then-attend | computation, TPOT | **test**: `tests/test_scheduler.py` and `tests/test_model.py::test_incremental_extend_matches_full_prefill` (cached extend == full prefill, tokens == HuggingFace) · **bench**: `benchmarks/bench_kv_cache.py` · **lab**: sections 3, 5, 6 |
+| Every decode step re-runs the whole sequence (`llm/naive.py`), so per-token cost grows with length | KV cache: `MHAKVCache` pool + `page_table` + per-step `out_loc`, store-then-attend | computation, TPOT | **test**: `tests/test_model.py::test_incremental_extend_matches_full_prefill` (logits from cached extends == one full prefill), `tests/test_scheduler.py` (tokens == HuggingFace) · **bench**: `benchmarks/bench_kv_cache.py` · **lab**: sections 3, 5, 6 |
 
 README numbers (`bench_kv_cache.py`, Qwen3-0.6B, 128-token prompt, outputs identical): TPOT without a
 cache grows 325.6 → 356.1 → 414.8 ms for 16/64/128 output tokens; with the cache it stays at
