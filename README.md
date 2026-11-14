@@ -187,7 +187,8 @@ The scheduler also fixes gaps found while writing the study guide
 GPU-only parts (Triton on GPU, CUDA Graph capture, NCCL TP) are written and reviewed, but have
 only been exercised on CPU: the Triton kernels via `TRITON_INTERPRET=1`, the graph padding logic
 by unit tests. [notebooks/gpu_benchmarks.ipynb](notebooks/gpu_benchmarks.ipynb) runs the tests and
-benchmarks on a Colab GPU.
+benchmarks on a Colab GPU:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/willychang21/mini-sglang/blob/main/notebooks/gpu_benchmarks.ipynb)
 
 Remaining simplifications:
 
