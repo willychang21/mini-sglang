@@ -74,7 +74,10 @@ Checked against the reference at commit 9a91cfa.
   reads whole pages; this repo never needs page IDs.
 * **No `store_cache` kernel.** `store_kv` is `flat_k_cache(layer)[out_loc] = k`.
 * **Pool size comes from `max_total_tokens`** (or `num_pages`), not from measured free GPU memory,
-  and there is **no `+1` dummy page** (no CUDA graphs). `page_table` is `int64`, width
+  but, like the reference, the pool has **`num_pages + 1` pages**: the last one is the dummy page
+  that CUDA-graph padding rows write into (`Engine.dummy_slot`, `engine/graph.py`), and the last
+  `page_table` row (`Engine.dummy_row`) points at it. The scheduler only manages the first
+  `num_pages`. `page_table` is `int64`, width
   `max_seq_len` (not aligned up to 32), and `max_seq_len` is also capped by
   `max_position_embeddings`. `free_slots` is `int64` too.
 * `MHAKVCache` allocates with `torch.zeros` (reference: `torch.empty`) and adds `flat_k_cache` /

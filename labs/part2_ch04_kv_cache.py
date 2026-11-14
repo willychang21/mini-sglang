@@ -46,12 +46,15 @@ def main(argv=None) -> None:
     print(table([[n, s] for n, s in zip(names, buf.shape)], ["dim meaning", "size"]))
     print(f"flat per-layer view used by store_kv: {tuple(eng.kv_cache.flat_k_cache(0).shape)}"
           "  = [num_pages*page_size, kv_heads, head_dim]")
-    assert tuple(buf.shape) == (2, cfg.num_layers, eng.num_pages, args.page_size, cfg.num_kv_heads, cfg.head_dim)
+    # num_pages + 1: the extra page is the reserved dummy page that CUDA-graph
+    # padding rows write into (Part II Ch4); the scheduler only manages num_pages.
+    assert tuple(buf.shape) == (2, cfg.num_layers, eng.num_pages + 1, args.page_size, cfg.num_kv_heads, cfg.head_dim)
     per_token = 2 * cfg.num_layers * cfg.num_kv_heads * cfg.head_dim * buf.element_size()
     print(f"bytes per cached token = 2 x {cfg.num_layers} layers x {cfg.num_kv_heads} heads x "
           f"{cfg.head_dim} dim x {buf.element_size()} B = {per_token} B")
-    print(f"pool total = {eng.kv_cache.num_bytes} B = per_token x {eng.num_pages * args.page_size} slots")
-    assert eng.kv_cache.num_bytes == per_token * eng.num_pages * args.page_size
+    print(f"pool total = {eng.kv_cache.num_bytes} B = per_token x {(eng.num_pages + 1) * args.page_size} slots"
+          f" ({eng.num_pages} scheduler pages + 1 dummy page)")
+    assert eng.kv_cache.num_bytes == per_token * (eng.num_pages + 1) * args.page_size
 
     # ------------------------------------------------------------------ 2
     section("2. free_slots holds the first slot of each free page")
