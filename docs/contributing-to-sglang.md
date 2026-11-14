@@ -127,6 +127,11 @@ then someone with write permission merges. Ping the oncall listed for your modul
 
 ## 7. Five real open issues, with plans
 
+> **Rehearsal done for Issue 1 (#10492):** see [`contribution-rehearsal/`](contribution-rehearsal/README.md)
+> for a CPU-verified slice (decision-layout helpers split out of `layers/joint_schema_head.py`), with the
+> patch, measurements, PR description and a submission checklist. It explains why the other four
+> were not picked for a CPU-only rehearsal. Nothing was submitted.
+
 How these were chosen: the open `good first issue` list had 46 items on 2026-11-14 and none
 created since August 2026. I read the full threads of 12 of them (the ones closest to this
 course's topics) plus 9 recent bug reports, 21 issues in total. **None of the 12 good-first-issue
@@ -156,6 +161,7 @@ something already built in mini-sglang. File paths were verified at `c5d7c59`.
      (registrations) are lost: grep for `register_` in that module.
   5. Re-measure (median of 5 runs), and run the unit tests of the touched package.
   6. PR `[Perf] startup: Defer <module> import`, with a before/after table and the command.
+- **Rehearsed:** [`contribution-rehearsal/`](contribution-rehearsal/README.md) follows this plan on SGLang `bd47834`.
 
 ### Issue 2 — #50206 Target GDS option leaks into a different draft loader
 - **Link:** https://github.com/sgl-project/sglang/issues/50206
