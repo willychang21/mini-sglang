@@ -26,10 +26,10 @@ from minisgl.llm import LLM
 from minisgl.tokenizer import TokenizeManager
 
 
-def workload(n: int, seed: int = 0):
+def workload(n: int, seed: int = 0, prompt_len=(16, 96), output_len=(16, 64)):
     rng = random.Random(seed)
-    prompts = [[rng.randrange(100, 10000) for _ in range(rng.randrange(16, 96))] for _ in range(n)]
-    sps = [SamplingParams(max_tokens=rng.randrange(16, 64), ignore_eos=True) for _ in range(n)]
+    prompts = [[rng.randrange(100, 10000) for _ in range(rng.randrange(*prompt_len))] for _ in range(n)]
+    sps = [SamplingParams(max_tokens=rng.randrange(*output_len), ignore_eos=True) for _ in range(n)]
     return prompts, sps
 
 
@@ -60,6 +60,8 @@ def admission(args) -> None:
     n = args.num_requests * 2
     cases = [
         ("exact lengths (ignore_eos)", *workload(n, seed=1), 1024, False),
+        ("long exact outputs (ignore_eos)", *workload(n, seed=2, prompt_len=(16, 32), output_len=(96, 160)), 1024,
+         False),
         ("chat, stops at EOS, max_tokens=256", *chat_workload(n, 256), 2048, True),
     ]
     for name, prompts, sps, budget, chat in cases:
