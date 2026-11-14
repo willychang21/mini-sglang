@@ -144,7 +144,7 @@ curl -s http://127.0.0.1:19191/v1/chat/completions -H "Content-Type: application
 kill %1
 ```
 
-Output (4-core CPU, real Qwen3-0.6B, fp32). The server was ready about 3 s after the
+Output (4-core CPU, real Qwen3-0.6B, fp32). The server was ready about 2 s after the
 tokenizers:
 
 ```text
