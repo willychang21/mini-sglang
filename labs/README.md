@@ -33,3 +33,24 @@ Run from the repository root, e.g. `python labs/part2_ch04_kv_cache.py`.
 Engine benchmarks that measure the *benefit* of each mechanism on the real model
 live in [`benchmarks/`](../benchmarks); their results are in the top-level
 README.
+
+## Part III / IV labs (bridge to SGLang)
+
+These back the notes in [`docs/part3/`](../docs/part3) and [`docs/part4/`](../docs/part4)
+(index: [`docs/README.md`](../docs/README.md)). Unlike the Part I/II labs they mostly use the
+**real** Qwen3-0.6B (`REAL_MODEL` from `_common.py`, i.e. `MINISGL_TEST_MODEL` or
+`/tmp/models/Qwen3-0.6B`) because they measure real weights, real KV bytes or real step
+times; the pure calculators need no model at all.
+
+| Lab | Chapter | What to look for |
+|---|---|---|
+| `part3_ch01_attention_tiling.py` | Part III Ch1 | Online-softmax tiling equals naive attention (and mini-sglang's SDPA mask) to 1e-7; split-KV + log-sum-exp merge; why decode at batch 1 under-fills a GPU. No model. |
+| `part3_ch02_quant_error.py [--skip-e2e]` | Part III Ch2 | Rounding error of BF16/FP8/INT8/INT4/NVFP4-like schemes on real weights; group size vs bits; the outlier effect; end-to-end greedy agreement and next-token KL with every linear fake-quantized. Real model. |
+| `part3_ch02_kv_capacity.py` | Part III Ch2, Ch4 | KV tokens and requests per precision (reproduces the chapter's Figure 5); formula == `MHAKVCache.num_bytes`; per-rank KV under TP with 8 KV heads. No weights. |
+| `part3_ch03_hicache_cost_model.py [--skip-measure]` | Part III Ch3 | Measured restore (copy) vs recompute (prefill) on CPU; GPU cost model with prefetch and layer-wise overlap; break-even prefix length; Exercise 3. |
+| `part3_ch04_parallel_comm.py` | Part III Ch4 | Bytes and collectives per step for TP, DP-attention, EP, PP; checks mini-sglang has 2 all-reduces per layer. No model. |
+| `part3_ch05_pd_transfer.py [--skip-measure]` | Part III Ch5 | KV transfer size/time vs prompt length and link bandwidth; link contention; prefix already on D; measured bytes from the real KV pool. |
+| `part4_ch01_ab_compare.py` | Part IV Ch1 Ex.2, Ch2 Ex.3 | A credible one-setting A/B: fresh engine per repeat, same warmup, mean [min, max], greedy-output equality check. Real model. |
+
+The profiler for Part IV Ch2 is [`benchmarks/profile.py`](../benchmarks/profile.py); its trace is read
+in [`docs/part4/profiling-walkthrough.md`](../docs/part4/profiling-walkthrough.md).

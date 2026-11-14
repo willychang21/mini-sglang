@@ -8,7 +8,8 @@ working, CPU-runnable re-implementation of the official
 through; the **labs** make each mechanism observable; the chapter notes tie the
 three together and answer every end-of-chapter exercise.
 
-Part III/IV are covered elsewhere.
+Part III/IV and the path to contributing to SGLang continue in [`docs/README.md`](../README.md)
+(source map → Part III/IV notes → contribution playbook → self-check).
 
 ## Setup (CPU only)
 
@@ -137,3 +138,6 @@ reference lists point to (scheduler, `mem_cache/radix_cache.py`,
 what SGLang adds is mostly overlap scheduling, CUDA graphs, custom kernels, more
 cache policies, and many models. Part IV Chapter 3 of the tutorial covers the
 SGLang PR workflow.
+
+Next step: the [mini-sglang → SGLang source map](../sglang-source-map.md) pins every module above
+to its SGLang file and class, then continue with the [Part III/IV notes](../README.md).

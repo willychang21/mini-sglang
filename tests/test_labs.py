@@ -35,8 +35,20 @@ FAST_LABS = [
     ("part2_ch08_radix_tree.py", [], False),
     ("part2_ch09_tp_shapes.py", [], False),
     ("part2_ch10_speculative.py", [], False),
+    # Part III / IV (needs_tok=True also means "needs the real Qwen3-0.6B checkpoint")
+    ("part3_ch01_attention_tiling.py", [], False),
+    ("part3_ch02_kv_capacity.py", [], False),
+    ("part3_ch04_parallel_comm.py", [], False),
+    ("part3_ch02_quant_error.py", ["--skip-e2e"], True),
+    ("part3_ch03_hicache_cost_model.py", ["--skip-measure"], False),
+    ("part3_ch05_pd_transfer.py", ["--skip-measure"], False),
 ]
-SLOW_LABS: list = []
+SLOW_LABS: list = [
+    ("part3_ch02_quant_error.py", [], True),
+    ("part3_ch03_hicache_cost_model.py", ["--lengths", "128", "256"], True),
+    ("part3_ch05_pd_transfer.py", [], True),
+    ("part4_ch01_ab_compare.py", ["--repeats", "2", "--num-requests", "3", "--shared-prefix", "128"], True),
+]
 
 
 def _run(script: str, args: list, timeout: int) -> None:
