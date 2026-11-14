@@ -75,3 +75,34 @@ def test_sampling_speculation_runs(tiny_model):
     sp = SamplingParams(max_tokens=25, temperature=0.8, top_k=50, ignore_eos=True)
     out, stats = spec.generate([5, 6, 7], sp)
     assert len(out) == 25 and stats.rounds > 0
+
+
+def test_ngram_drafter_is_lossless_and_accepts_repeats(tiny_model, hf_reference):
+    from minisgl.speculative import NgramDrafter
+
+    hf = hf_reference(tiny_model)
+    target = _engine(tiny_model)
+    spec = SpeculativeDecoder(target, NgramDrafter(vocab_size=512), num_draft_tokens=5)
+    rng = random.Random(0)
+    for _ in range(4):
+        prompt = [rng.randrange(500) for _ in range(rng.randrange(2, 20))]
+        n = rng.randrange(5, 40)
+        out, _ = spec.generate(prompt, SamplingParams(max_tokens=n, ignore_eos=True))
+        assert out == hf_greedy(hf, prompt, n)
+    # greedy output of a random model tends to fall into cycles -> lookups hit
+    out, stats = spec.generate([1, 2, 3], SamplingParams(max_tokens=120, ignore_eos=True))
+    assert out == hf_greedy(hf, [1, 2, 3], 120)
+    assert stats.target_forwards < 120
+
+
+def test_ngram_drafter_proposals():
+    from minisgl.speculative import NgramDrafter
+
+    d = NgramDrafter(vocab_size=100, max_ngram=2)
+    gen = torch.Generator()
+    sp = SamplingParams()
+    assert d.propose([5, 6, 7, 8, 5, 6], 3, sp, (), gen)[0] == [7, 8, 5]
+    assert d.propose([1, 2, 3], 3, sp, (), gen)[0] == []
+    assert d.propose([5, 6, 9, 5, 6], 3, sp, {9}, gen)[0] == [9]
+    _, q = d.propose([5, 6, 7, 5, 6], 2, SamplingParams(temperature=1.0), (), gen)
+    assert len(q) == 2 and q[0][7] == 1.0
