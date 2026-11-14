@@ -14,6 +14,7 @@ import time
 
 import torch
 
+from _common import add_engine_args, describe, engine_kwargs
 from minisgl import SamplingParams
 from minisgl.config import EngineConfig
 from minisgl.engine import Engine
@@ -26,10 +27,11 @@ def main() -> None:
     ap.add_argument("--model", required=True)
     ap.add_argument("--prompt-len", type=int, default=128)
     ap.add_argument("--output-lens", default="16,64,128")
-    ap.add_argument("--device", default="cpu")
+    add_engine_args(ap)
     args = ap.parse_args()
+    print(describe(args))
 
-    engine = Engine(EngineConfig(args.model, device=args.device, max_total_tokens=4096, max_seq_len=2048))
+    engine = Engine(EngineConfig(args.model, **engine_kwargs(args), max_total_tokens=4096, max_seq_len=2048))
     prompt = torch.randint(100, 10000, (args.prompt_len,), generator=torch.Generator().manual_seed(0)).tolist()
     print(f"prompt_len={args.prompt_len}")
     print(f"| output tokens | no cache: total s | no cache: TPOT ms | KV cache: total s | KV cache: TPOT ms | speedup | same output |")
