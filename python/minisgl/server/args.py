@@ -29,6 +29,7 @@ class ServerArgs:
     prefill_budget: int = 2048
     cache_type: str = "radix"
     admission: str = "conservative"
+    disable_overlap: bool = True
     max_buffered_bytes: int = 1 << 20
     client_stall_timeout: float = 60.0
     seed: int = 0
@@ -81,7 +82,7 @@ class ServerArgs:
 
 
     def scheduler_config(self) -> SchedulerConfig:
-        return SchedulerConfig(admission=self.admission)  # type: ignore[arg-type]
+        return SchedulerConfig(admission=self.admission, disable_overlap=self.disable_overlap)  # type: ignore[arg-type]
 
 
 def parse_args(argv=None) -> ServerArgs:
@@ -106,6 +107,18 @@ def parse_args(argv=None) -> ServerArgs:
         help="conservative: reserve each request's full max_tokens of KV (never preempts); "
         "optimistic: reserve max_tokens * new_token_ratio and retract decode requests on KV exhaustion",
     )
+    overlap = p.add_mutually_exclusive_group()
+    overlap.add_argument(
+        "--enable-overlap",
+        dest="disable_overlap",
+        action="store_false",
+        help="overlap scheduling: process batch N and schedule N+2 while batch N+1 runs "
+        "(off by default: on CPU it has no spare cores to overlap onto)",
+    )
+    overlap.add_argument(
+        "--disable-overlap", dest="disable_overlap", action="store_true", help="use normal_loop (default)"
+    )
+    p.set_defaults(disable_overlap=True)
     p.add_argument(
         "--max-buffered-bytes",
         type=int,

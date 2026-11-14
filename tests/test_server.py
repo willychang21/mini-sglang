@@ -197,3 +197,26 @@ def test_backpressure_flags_reach_frontend(tiny_model_with_tokenizer):
             time.sleep(0.2)
     finally:
         _stop(proc)
+
+
+def test_overlap_optimistic_server_matches(tiny_model_with_tokenizer, reference):
+    """The served pipeline with overlap scheduling + optimistic admission."""
+    proc, url = _start(tiny_model_with_tokenizer, "--enable-overlap", "--admission", "optimistic",
+                       "--num-tokenizers", "3")
+    prompts = [f"Overlap request {i} says" for i in range(6)]
+
+    async def run():
+        async with httpx.AsyncClient(timeout=120) as client:
+            tasks = [
+                client.post(url + "/v1/completions",
+                            json={"prompt": p, "max_tokens": 8 + i, "temperature": 0, "ignore_eos": True})
+                for i, p in enumerate(prompts)
+            ]
+            return [r.json()["choices"][0]["text"] for r in await asyncio.gather(*tasks)]
+
+    try:
+        texts = asyncio.run(run())
+    finally:
+        _stop(proc)
+    for i, (p, t) in enumerate(zip(prompts, texts)):
+        assert t == reference(p, 8 + i)

@@ -24,7 +24,19 @@ def _prompts(n=8, seed=0):
     return [[rng.randrange(500) for _ in range(rng.randrange(5, 20))] for _ in range(n)]
 
 
+LOOP = "normal"
+
+
+@pytest.fixture(autouse=True, params=["normal", "overlap"])
+def _loop(request):
+    """Every test runs under both scheduler loops."""
+    global LOOP
+    LOOP = request.param
+    yield
+
+
 def _llm(path, **kw):
+    kw.setdefault("disable_overlap", LOOP == "normal")
     kw.setdefault("max_total_tokens", 160)
     kw.setdefault("max_seq_len", 128)
     return LLM(path, load_tokenizer_=False, device="cpu", **kw)
