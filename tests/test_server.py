@@ -181,3 +181,19 @@ def test_children_exit_with_server(tiny_model_with_tokenizer):
         alive = [c for c in alive if os.path.exists(f"/proc/{c}") and "Z" not in open(f"/proc/{c}/stat").read().split()[2]]
         time.sleep(0.5)
     assert not alive
+
+
+def test_backpressure_flags_reach_frontend(tiny_model_with_tokenizer):
+    """A 1-byte buffer cap cuts off every request that produces text (the
+    policy itself is unit-tested in test_backpressure.py)."""
+    proc, url = _start(tiny_model_with_tokenizer, "--max-buffered-bytes", "1", "--client-stall-timeout", "5")
+    try:
+        body = {"prompt": "hello hello hello", "max_tokens": 32, "temperature": 0, "ignore_eos": True}
+        r = httpx.post(url + "/v1/completions", json=body, timeout=60)
+        assert r.status_code == 400 and "client too slow" in r.json()["error"]["message"]
+        deadline = time.time() + 10
+        while httpx.get(url + "/debug/state").json() != {"ack_map": 0, "event_map": 0}:
+            assert time.time() < deadline
+            time.sleep(0.2)
+    finally:
+        _stop(proc)

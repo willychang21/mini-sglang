@@ -108,6 +108,8 @@ def launch_server(argv=None) -> None:
         model_name=os.path.basename(os.path.normpath(args.model_path)),
         send_addrs=args.tokenizer_addrs,
         recv_addr=args.frontend_addr,
+        max_buffered_bytes=args.max_buffered_bytes,
+        stall_timeout=args.client_stall_timeout,
     )
     state.bind()
     set_global_state(state)

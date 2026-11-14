@@ -29,6 +29,8 @@ class ServerArgs:
     prefill_budget: int = 2048
     cache_type: str = "radix"
     admission: str = "conservative"
+    max_buffered_bytes: int = 1 << 20
+    client_stall_timeout: float = 60.0
     seed: int = 0
     dist_port: int = 29517
     ipc_dir: str = field(default_factory=lambda: tempfile.gettempdir())
@@ -103,6 +105,18 @@ def parse_args(argv=None) -> ServerArgs:
         default="conservative",
         help="conservative: reserve each request's full max_tokens of KV (never preempts); "
         "optimistic: reserve max_tokens * new_token_ratio and retract decode requests on KV exhaustion",
+    )
+    p.add_argument(
+        "--max-buffered-bytes",
+        type=int,
+        default=1 << 20,
+        help="backpressure: abort a request whose client has more than this much undelivered text (0 = off)",
+    )
+    p.add_argument(
+        "--client-stall-timeout",
+        type=float,
+        default=60.0,
+        help="backpressure: abort a request whose replies sat unread for this many seconds (0 = off)",
     )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dist-port", type=int, default=29517)
